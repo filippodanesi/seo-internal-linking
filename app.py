@@ -199,12 +199,21 @@ Return your suggestions as a JSON array with this format:
 Return ONLY the JSON array, no other text."""
 
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=1500
-        )
+        # GPT-5.x uses max_completion_tokens, older models use max_tokens
+        if model.startswith("gpt-5"):
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_completion_tokens=1500
+            )
+        else:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=1500
+            )
 
         result = response.choices[0].message.content.strip()
 
