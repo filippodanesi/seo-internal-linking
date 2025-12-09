@@ -655,20 +655,30 @@ STRICT RULES:
 3. ONLY link to category pages (PLPs) - never to product pages ending in .html or with numeric codes
 4. Maintain color coherence: if source is about "beige", only link to beige/nude/cream/tan/brown pages, never to black/blue/red etc.
 5. Each target URL should only be used ONCE
-6. The anchor text MUST exist EXACTLY as written in the source content
 
-QUALITY GUIDELINES:
-- Find natural phrases IN THE EXISTING TEXT that make good anchor texts
-- Prefer descriptive anchor texts (2-4 words) over single words
-- Don't link generic words like "here", "click", "this", "our", "the"
-- Ensure links add value for the reader
-- Distribute links throughout the content
+LINKING APPROACH (in order of preference):
+1. **BEST**: Find an EXACT phrase in the existing text that perfectly matches the target page topic
+2. **ACCEPTABLE**: If no perfect match exists, you MAY slightly modify the text to naturally incorporate a relevant keyword. Keep changes minimal and maintain the original meaning.
+3. **SKIP**: If you cannot find or create a natural fit, DO NOT force the link. It's better to have fewer high-quality links than many forced ones.
+
+EXAMPLES OF ACCEPTABLE MODIFICATIONS:
+- Original: "our comfortable styles" → Modified: "our comfortable bralettes" (added specific product type)
+- Original: "explore our range" → Modified: "explore our shapewear range" (added category)
+- Original: "finding reliable support" → Modified: "finding reliable sports bra support" (added product context)
+
+DO NOT:
+- Force links on unrelated anchor texts (e.g., "beige sports bra" → minimizer page)
+- Use generic words as anchors ("here", "click", "this", "our", "the")
+- Combine multiple products in one anchor ("tan push up bra or cream push up bra")
+- Link to semantically unrelated categories
 
 Return your suggestions as a JSON array:
 [
   {{
-    "anchor_text": "exact text from source to make into link",
+    "anchor_text": "the anchor text to use (exact from source OR your minimal modification)",
     "target_url": "URL from the available list above",
+    "original_text": "the original text if modified, or same as anchor_text if unchanged",
+    "is_modified": true/false,
     "reason": "brief SEO explanation of why this link is valuable"
   }}
 ]
@@ -708,7 +718,7 @@ Return ONLY the JSON array, no other text."""
 
 
 def insert_ai_suggested_links(html_text: str, suggestions: List[Dict], source_url: str = "") -> Tuple[str, List[Dict]]:
-    """Insert links based on AI suggestions with validation"""
+    """Insert links based on AI suggestions with validation. Supports text modifications."""
     if not html_text or not suggestions:
         return html_text, []
 
@@ -721,6 +731,8 @@ def insert_ai_suggested_links(html_text: str, suggestions: List[Dict], source_ur
         anchor = suggestion.get('anchor_text', '')
         target_url = suggestion.get('target_url', '')
         reason = suggestion.get('reason', '')
+        original_text = suggestion.get('original_text', anchor)  # Text to find in source
+        is_modified = suggestion.get('is_modified', False)
 
         if not anchor or not target_url:
             continue
@@ -745,33 +757,45 @@ def insert_ai_suggested_links(html_text: str, suggestions: List[Dict], source_ur
         if target_url in used_urls:
             continue
 
-        # Find anchor in text, avoiding existing links
+        # Find text in content, avoiding existing links
         # Strategy: split by <a>...</a> tags, only search in non-link parts
         parts = re.split(r'(<a\s[^>]*>.*?</a>)', result, flags=re.IGNORECASE | re.DOTALL)
+
+        # Determine what text to search for
+        search_text = original_text if is_modified else anchor
 
         found = False
         new_parts = []
 
         for part in parts:
-            if found or part.startswith('<a ') or part.startswith('<a>'):
+            if found or part.lower().startswith('<a ') or part.lower().startswith('<a>'):
                 # Already found or this is an existing link - keep as is
                 new_parts.append(part)
             else:
-                # Search for anchor in this non-link part
-                pattern = re.compile(re.escape(anchor), re.IGNORECASE)
+                # Search for the text in this non-link part
+                pattern = re.compile(re.escape(search_text), re.IGNORECASE)
                 match = pattern.search(part)
 
                 if match:
-                    # Replace first occurrence
-                    original_text = match.group(0)
-                    replacement = f'<a href="{target_url}">{original_text}</a>'
+                    # Replace: if modified, replace original with new anchor+link
+                    # if not modified, just wrap the found text with link
+                    if is_modified:
+                        # Replace original text with modified anchor text wrapped in link
+                        replacement = f'<a href="{target_url}">{anchor}</a>'
+                    else:
+                        # Keep original text case, just wrap with link
+                        found_text = match.group(0)
+                        replacement = f'<a href="{target_url}">{found_text}</a>'
+
                     new_part = part[:match.start()] + replacement + part[match.end():]
                     new_parts.append(new_part)
                     found = True
 
                     links_inserted.append({
-                        'anchor_text': original_text,
+                        'anchor_text': anchor,
                         'target_url': target_url,
+                        'original_text': original_text if is_modified else anchor,
+                        'is_modified': is_modified,
                         'reason': reason
                     })
                     used_anchors.add(anchor.lower())
@@ -1516,10 +1540,16 @@ def main():
 
                         new_text, links_inserted = insert_ai_suggested_links(source_text, suggestions, source_url)
 
-                        reasoning = '\n'.join([
-                            f"• {l['anchor_text']} → {l['reason']}"
-                            for l in links_inserted
-                        ])
+                        # Build reasoning with modification indicator
+                        reasoning_lines = []
+                        for l in links_inserted:
+                            if l.get('is_modified'):
+                                reasoning_lines.append(
+                                    f"• {l['anchor_text']} [✏️ modified from: \"{l['original_text']}\"] → {l['reason']}"
+                                )
+                            else:
+                                reasoning_lines.append(f"• {l['anchor_text']} → {l['reason']}")
+                        reasoning = '\n'.join(reasoning_lines)
 
                     else:
                         # Fallback to keyword matching
