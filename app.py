@@ -96,7 +96,8 @@ def get_ai_link_suggestions(
     source_url: str,
     target_pages: List[Dict],
     api_key: str,
-    max_links: int = 5
+    max_links: int = 5,
+    model: str = "gpt-4o"
 ) -> List[Dict]:
     """
     Use GPT to analyze the source text and suggest intelligent link placements.
@@ -144,7 +145,7 @@ Return ONLY the JSON array, no other text."""
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=1500
@@ -161,7 +162,7 @@ Return ONLY the JSON array, no other text."""
         return suggestions
 
     except Exception as e:
-        st.warning(f"AI suggestion error: {str(e)}")
+        st.warning(f"AI suggestion error for {source_url}: {str(e)}")
         return []
 
 
@@ -434,6 +435,21 @@ def main():
             help="Use GPT to analyze context and suggest optimal anchor texts like an SEO expert"
         )
 
+        if use_ai_suggestions:
+            ai_model = st.selectbox(
+                "AI Model",
+                [
+                    "gpt-4o",
+                    "gpt-4o-mini",
+                    "gpt-4-turbo",
+                    "gpt-5.1",  # When available
+                ],
+                index=0,
+                help="GPT-4o recommended for best quality. GPT-5.1 when available."
+            )
+        else:
+            ai_model = "gpt-4o"
+
     # Main content
     tab1, tab2, tab3 = st.tabs(["📤 Upload & Process", "📊 Analysis", "📥 Export"])
 
@@ -603,7 +619,8 @@ def main():
                             source_url=source_url,
                             target_pages=target_pages,
                             api_key=api_key,
-                            max_links=max_links
+                            max_links=max_links,
+                            model=ai_model
                         )
 
                         new_text, links_inserted = insert_ai_suggested_links(source_text, suggestions)
