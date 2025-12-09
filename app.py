@@ -87,6 +87,54 @@ def extract_text_from_html(html: str) -> str:
     return text
 
 
+def parse_sitemap(file_content: bytes, filename: str) -> List[str]:
+    """Parse sitemap from JSON, TXT, or XML format"""
+    urls = []
+    content = file_content.decode('utf-8')
+
+    try:
+        if filename.endswith('.json'):
+            # JSON array of URLs
+            data = json.loads(content)
+            if isinstance(data, list):
+                urls = [u for u in data if isinstance(u, str) and u.startswith('http')]
+            elif isinstance(data, dict) and 'urls' in data:
+                urls = [u for u in data['urls'] if isinstance(u, str) and u.startswith('http')]
+
+        elif filename.endswith('.xml'):
+            # XML sitemap
+            import re
+            loc_pattern = re.compile(r'<loc>(.*?)</loc>', re.IGNORECASE)
+            urls = loc_pattern.findall(content)
+
+        else:
+            # TXT - one URL per line
+            urls = [line.strip() for line in content.split('\n')
+                    if line.strip().startswith('http')]
+
+    except Exception as e:
+        st.warning(f"Error parsing sitemap: {str(e)}")
+
+    return urls
+
+
+def extract_keyword_from_url(url: str) -> str:
+    """Extract a keyword/description from URL path"""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        path_parts = [p for p in parsed.path.split('/') if p]
+
+        if not path_parts:
+            return ""
+
+        # Take last 2-3 meaningful parts and convert to readable text
+        meaningful = [p.replace('-', ' ').replace('_', ' ') for p in path_parts[-3:]]
+        return ' '.join(meaningful)
+    except:
+        return ""
+
+
 # ============================================================================
 # AI-POWERED LINK SUGGESTION
 # ============================================================================
@@ -456,7 +504,7 @@ def main():
     with tab1:
         st.header("Upload your data")
 
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns([2, 2, 1])
 
         with col1:
             st.subheader("SEO Data (XLSX)")
@@ -467,26 +515,28 @@ def main():
             )
 
         with col2:
-            st.subheader("How it works")
+            st.subheader("Sitemap (Optional)")
+            sitemap_file = st.file_uploader(
+                "Upload sitemap for additional targets",
+                type=['json', 'txt', 'xml'],
+                help="JSON array of URLs, TXT (one URL per line), or XML sitemap. Adds more link targets."
+            )
+
+        with col3:
+            st.subheader("Info")
             if use_ai_suggestions:
-                st.info("""
-                **🤖 AI-Powered Mode (Active)**
-
-                The AI will analyze each page's content and:
-                1. Understand the semantic context
-                2. Find natural anchor text opportunities
-                3. Match them to relevant target pages
-                4. Insert links that add value for readers
-
-                This mimics how an expert SEO would approach internal linking.
-                """)
+                st.info("🤖 **AI Mode**\nGPT analyzes context for smart links")
             else:
-                st.info("""
-                **📊 Similarity Mode**
+                st.info("📊 **Basic Mode**\nKeyword matching only")
 
-                Uses embeddings to find semantically similar pages
-                and matches keywords for link insertion.
-                """)
+        # Parse sitemap if provided
+        sitemap_urls = []
+        if sitemap_file:
+            sitemap_urls = parse_sitemap(sitemap_file.getvalue(), sitemap_file.name)
+            if sitemap_urls:
+                st.success(f"✅ Loaded {len(sitemap_urls)} URLs from sitemap")
+            else:
+                st.warning("⚠️ Could not parse sitemap or no valid URLs found")
 
         if xlsx_file:
             df = pd.read_excel(xlsx_file)
@@ -568,19 +618,40 @@ def main():
                 results = []
                 total_links = 0
 
-                # Prepare target pages list
+                # Prepare target pages list from XLSX
                 all_targets = []
+                xlsx_urls = set()
                 for idx, row in df.iterrows():
                     url = row.get('URL', '')
                     if pd.isna(url):
                         continue
+                    url_str = str(url)
+                    xlsx_urls.add(url_str)
                     all_targets.append({
                         'idx': idx,
-                        'url': str(url),
+                        'url': url_str,
                         'keyword': str(row.get('Primary Keyword (Color + Type)', '')),
                         'category': parse_url_path(url)['category'],
-                        'pagerank': pagerank_scores.get(idx, 0)
+                        'pagerank': pagerank_scores.get(idx, 0),
+                        'source': 'xlsx'
                     })
+
+                # Add sitemap URLs as additional targets (if not already in XLSX)
+                if sitemap_urls:
+                    sitemap_added = 0
+                    for url in sitemap_urls:
+                        if url not in xlsx_urls:
+                            all_targets.append({
+                                'idx': -1,  # Not in dataframe
+                                'url': url,
+                                'keyword': extract_keyword_from_url(url),
+                                'category': parse_url_path(url)['category'],
+                                'pagerank': 0.001,  # Low default pagerank for sitemap URLs
+                                'source': 'sitemap'
+                            })
+                            sitemap_added += 1
+                    if sitemap_added > 0:
+                        status.text(f"📍 Added {sitemap_added} additional targets from sitemap")
 
                 for idx in range(len(df)):
                     row = df.iloc[idx].to_dict()
@@ -597,20 +668,35 @@ def main():
                         })
                         continue
 
-                    # Get top similar pages as candidates
+                    # Get top similar pages as candidates from XLSX
                     similarities = similarity_matrix[idx]
-                    top_indices = np.argsort(similarities)[::-1][1:21]  # Top 20, excluding self
+                    top_indices = set(np.argsort(similarities)[::-1][1:21])  # Top 20, excluding self
 
-                    target_pages = [
-                        t for t in all_targets
-                        if t['idx'] in top_indices and t['url'] != source_url
-                    ]
+                    # Include both: similar XLSX pages + relevant sitemap pages (same category)
+                    source_category = parse_url_path(source_url)['category']
 
-                    # Sort by similarity * pagerank
+                    target_pages = []
+                    for t in all_targets:
+                        if t['url'] == source_url:
+                            continue
+
+                        if t['source'] == 'xlsx' and t['idx'] in top_indices:
+                            # XLSX target with high similarity
+                            t['similarity'] = similarities[t['idx']]
+                            target_pages.append(t)
+                        elif t['source'] == 'sitemap' and t['category'] == source_category:
+                            # Sitemap target in same category
+                            t['similarity'] = 0.5  # Default similarity for sitemap URLs
+                            target_pages.append(t)
+
+                    # Sort by similarity * pagerank (with safe handling for sitemap URLs)
                     target_pages.sort(
-                        key=lambda x: similarities[x['idx']] * (1 + x['pagerank'] * 10),
+                        key=lambda x: x.get('similarity', 0.5) * (1 + x['pagerank'] * 10),
                         reverse=True
                     )
+
+                    # Limit to top 30 candidates for AI
+                    target_pages = target_pages[:30]
 
                     if use_ai_suggestions and target_pages:
                         # Use AI to suggest intelligent link placements
