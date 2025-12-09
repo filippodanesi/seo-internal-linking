@@ -142,6 +142,80 @@ def extract_keyword_from_url(url: str) -> str:
         return ""
 
 
+def is_plp_url(url: str) -> bool:
+    """
+    Check if URL is a Product Listing Page (PLP) vs Product Detail Page (PDP).
+    PLPs are category pages, PDPs are individual product pages.
+
+    PDP indicators:
+    - Ends with .html
+    - Contains numeric product codes (e.g., /10005020-0003.html)
+    - Has very long numeric sequences
+    """
+    if not url:
+        return False
+
+    url_lower = url.lower()
+
+    # PDP: ends with .html
+    if url_lower.endswith('.html'):
+        return False
+
+    # PDP: contains numeric product codes (8+ digits)
+    if re.search(r'/\d{8,}', url):
+        return False
+
+    # PDP: ends with a numeric code pattern like /12345 or /12345-6789
+    if re.search(r'/\d+-\d+\.html?$', url) or re.search(r'/\d{5,}$', url):
+        return False
+
+    return True
+
+
+def urls_are_semantically_coherent(source_url: str, target_url: str) -> bool:
+    """
+    Check if linking from source to target makes semantic sense.
+    Avoid linking beige to black, bras to completely unrelated categories, etc.
+    """
+    source_parsed = parse_url_path(source_url)
+    target_parsed = parse_url_path(target_url)
+
+    source_path = source_url.lower()
+    target_path = target_url.lower()
+
+    # Extract color from URLs if present
+    colors = ['beige', 'black', 'white', 'brown', 'blue', 'red', 'pink', 'grey', 'gray', 'green', 'nude', 'cream', 'tan']
+
+    source_color = None
+    target_color = None
+
+    for color in colors:
+        if f'/{color}' in source_path or source_path.endswith(f'/{color}'):
+            source_color = color
+        if f'/{color}' in target_path or target_path.endswith(f'/{color}'):
+            target_color = color
+
+    # If both have colors and they're completely different (not similar tones), flag as incoherent
+    # Allow: beige->nude, beige->cream, beige->tan, beige->brown (similar neutral tones)
+    # Disallow: beige->black, beige->blue, beige->red
+    neutral_tones = {'beige', 'nude', 'cream', 'tan', 'brown'}
+
+    if source_color and target_color:
+        if source_color in neutral_tones and target_color not in neutral_tones:
+            return False
+        if source_color not in neutral_tones and target_color in neutral_tones:
+            # Allow linking from colored to neutral
+            pass
+        elif source_color != target_color:
+            # Different non-neutral colors
+            source_neutral = source_color in neutral_tones
+            target_neutral = target_color in neutral_tones
+            if not (source_neutral and target_neutral):
+                return False
+
+    return True
+
+
 # ============================================================================
 # AI-POWERED LINK SUGGESTION
 # ============================================================================
@@ -173,26 +247,33 @@ SOURCE PAGE: {source_url}
 SOURCE CONTENT (Bottom SEO Text):
 {source_text[:3000]}
 
-AVAILABLE TARGET PAGES TO LINK TO:
+AVAILABLE TARGET PAGES TO LINK TO (Category Pages Only):
 {targets_summary}
 
 YOUR TASK:
-Analyze the source content and identify {max_links} optimal places to insert internal links. For each suggestion:
+Analyze the source content and identify {max_links} optimal places to insert internal links.
 
-1. Find a natural phrase or word IN THE EXISTING TEXT that would make a good anchor text
-2. The anchor text should be contextually relevant to the target page
-3. Prefer longer, descriptive anchor texts (2-4 words) over single words when natural
-4. Don't link generic words like "here", "click", "this", etc.
-5. Ensure the link adds value for the reader
-6. Distribute links throughout the content, not all in one paragraph
-7. The anchor text MUST exist exactly as written in the source content
+STRICT RULES:
+1. ONLY use URLs from the AVAILABLE TARGET PAGES list above - never invent URLs
+2. NEVER link to the source page itself (no self-linking)
+3. ONLY link to category pages (PLPs) - never to product pages ending in .html or with numeric codes
+4. Maintain color coherence: if source is about "beige", only link to beige/nude/cream/tan/brown pages, never to black/blue/red etc.
+5. Each target URL should only be used ONCE
+6. The anchor text MUST exist EXACTLY as written in the source content
 
-Return your suggestions as a JSON array with this format:
+QUALITY GUIDELINES:
+- Find natural phrases IN THE EXISTING TEXT that make good anchor texts
+- Prefer descriptive anchor texts (2-4 words) over single words
+- Don't link generic words like "here", "click", "this", "our", "the"
+- Ensure links add value for the reader
+- Distribute links throughout the content
+
+Return your suggestions as a JSON array:
 [
   {{
     "anchor_text": "exact text from source to make into link",
-    "target_url": "URL to link to",
-    "reason": "brief explanation of why this link is valuable"
+    "target_url": "URL from the available list above",
+    "reason": "brief SEO explanation of why this link is valuable"
   }}
 ]
 
@@ -230,14 +311,15 @@ Return ONLY the JSON array, no other text."""
         return []
 
 
-def insert_ai_suggested_links(html_text: str, suggestions: List[Dict]) -> Tuple[str, List[Dict]]:
-    """Insert links based on AI suggestions"""
+def insert_ai_suggested_links(html_text: str, suggestions: List[Dict], source_url: str = "") -> Tuple[str, List[Dict]]:
+    """Insert links based on AI suggestions with validation"""
     if not html_text or not suggestions:
         return html_text, []
 
     result = html_text
     links_inserted = []
     used_anchors = set()
+    used_urls = set()
 
     for suggestion in suggestions:
         anchor = suggestion.get('anchor_text', '')
@@ -247,8 +329,24 @@ def insert_ai_suggested_links(html_text: str, suggestions: List[Dict]) -> Tuple[
         if not anchor or not target_url:
             continue
 
-        # Skip if already used this anchor
+        # VALIDATION 1: No self-linking
+        if target_url == source_url:
+            continue
+
+        # VALIDATION 2: Only PLP URLs
+        if not is_plp_url(target_url):
+            continue
+
+        # VALIDATION 3: Semantic coherence
+        if source_url and not urls_are_semantically_coherent(source_url, target_url):
+            continue
+
+        # VALIDATION 4: No duplicate anchors
         if anchor.lower() in used_anchors:
+            continue
+
+        # VALIDATION 5: No duplicate target URLs
+        if target_url in used_urls:
             continue
 
         # Find anchor in text, avoiding existing links
@@ -281,6 +379,7 @@ def insert_ai_suggested_links(html_text: str, suggestions: List[Dict]) -> Tuple[
                         'reason': reason
                     })
                     used_anchors.add(anchor.lower())
+                    used_urls.add(target_url)
                 else:
                     new_parts.append(part)
 
@@ -708,17 +807,30 @@ def main():
 
                     target_pages = []
                     for t in all_targets:
-                        if t['url'] == source_url:
+                        target_url = t['url']
+
+                        # FILTER 1: No self-linking
+                        if target_url == source_url:
+                            continue
+
+                        # FILTER 2: Only PLP URLs (no product detail pages)
+                        if not is_plp_url(target_url):
+                            continue
+
+                        # FILTER 3: Semantic coherence (no beige->black, etc.)
+                        if not urls_are_semantically_coherent(source_url, target_url):
                             continue
 
                         if t['source'] == 'xlsx' and t['idx'] in top_indices:
                             # XLSX target with high similarity
-                            t['similarity'] = similarities[t['idx']]
-                            target_pages.append(t)
+                            t_copy = t.copy()
+                            t_copy['similarity'] = similarities[t['idx']]
+                            target_pages.append(t_copy)
                         elif t['source'] == 'sitemap' and t['category'] == source_category:
                             # Sitemap target in same category
-                            t['similarity'] = 0.5  # Default similarity for sitemap URLs
-                            target_pages.append(t)
+                            t_copy = t.copy()
+                            t_copy['similarity'] = 0.5  # Default similarity for sitemap URLs
+                            target_pages.append(t_copy)
 
                     # Sort by similarity * pagerank (with safe handling for sitemap URLs)
                     target_pages.sort(
@@ -740,7 +852,7 @@ def main():
                             model=ai_model
                         )
 
-                        new_text, links_inserted = insert_ai_suggested_links(source_text, suggestions)
+                        new_text, links_inserted = insert_ai_suggested_links(source_text, suggestions, source_url)
 
                         reasoning = '\n'.join([
                             f"• {l['anchor_text']} → {l['reason']}"
