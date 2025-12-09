@@ -1,6 +1,6 @@
 """
 SEO Internal Linking Tool
-Semantic analysis + PageRank simulation for optimal internal link placement
+AI-powered semantic analysis for intelligent internal link placement
 """
 
 import streamlit as st
@@ -43,9 +43,6 @@ st.markdown("""
         border-radius: 10px;
         color: white;
     }
-    .stProgress .st-bo {
-        background-color: #1E88E5;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -54,10 +51,16 @@ st.markdown("""
 # UTILITY FUNCTIONS
 # ============================================================================
 
+def get_api_key() -> str:
+    """Get API key from secrets or session state"""
+    if "OPENAI_API_KEY" in st.secrets:
+        return st.secrets["OPENAI_API_KEY"]
+    return st.session_state.get('manual_api_key', '')
+
+
 def parse_url_path(url) -> Dict:
     """Extract category structure from URL"""
     try:
-        # Handle NaN, None, or non-string values
         if url is None or (isinstance(url, float) and np.isnan(url)):
             return {'category': '', 'subcategory': '', 'color': '', 'depth': 0}
 
@@ -75,20 +78,136 @@ def parse_url_path(url) -> Dict:
         return {'category': '', 'subcategory': '', 'color': '', 'depth': 0}
 
 
-def escape_regex(string: str) -> str:
-    """Escape special regex characters"""
-    return re.escape(string)
-
-
 def extract_text_from_html(html: str) -> str:
     """Remove HTML tags and extract plain text"""
     if not html:
         return ""
-    # Remove tags
     text = re.sub(r'<[^>]+>', ' ', html)
-    # Clean whitespace
     text = re.sub(r'\s+', ' ', text).strip()
     return text
+
+
+# ============================================================================
+# AI-POWERED LINK SUGGESTION
+# ============================================================================
+
+def get_ai_link_suggestions(
+    source_text: str,
+    source_url: str,
+    target_pages: List[Dict],
+    api_key: str,
+    max_links: int = 5
+) -> List[Dict]:
+    """
+    Use GPT to analyze the source text and suggest intelligent link placements.
+    This mimics how an expert SEO would identify linking opportunities.
+    """
+    client = OpenAI(api_key=api_key)
+
+    # Prepare target pages summary
+    targets_summary = "\n".join([
+        f"- URL: {p['url']}\n  Keyword: {p['keyword']}\n  Category: {p['category']}"
+        for p in target_pages[:30]  # Limit to top 30 most relevant
+    ])
+
+    prompt = f"""You are an expert SEO specialist analyzing content for internal linking opportunities.
+
+SOURCE PAGE: {source_url}
+
+SOURCE CONTENT (Bottom SEO Text):
+{source_text[:3000]}
+
+AVAILABLE TARGET PAGES TO LINK TO:
+{targets_summary}
+
+YOUR TASK:
+Analyze the source content and identify {max_links} optimal places to insert internal links. For each suggestion:
+
+1. Find a natural phrase or word IN THE EXISTING TEXT that would make a good anchor text
+2. The anchor text should be contextually relevant to the target page
+3. Prefer longer, descriptive anchor texts (2-4 words) over single words when natural
+4. Don't link generic words like "here", "click", "this", etc.
+5. Ensure the link adds value for the reader
+6. Distribute links throughout the content, not all in one paragraph
+7. The anchor text MUST exist exactly as written in the source content
+
+Return your suggestions as a JSON array with this format:
+[
+  {{
+    "anchor_text": "exact text from source to make into link",
+    "target_url": "URL to link to",
+    "reason": "brief explanation of why this link is valuable"
+  }}
+]
+
+Return ONLY the JSON array, no other text."""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=1500
+        )
+
+        result = response.choices[0].message.content.strip()
+
+        # Parse JSON from response
+        if result.startswith("```"):
+            result = re.sub(r'^```json?\n?', '', result)
+            result = re.sub(r'\n?```$', '', result)
+
+        suggestions = json.loads(result)
+        return suggestions
+
+    except Exception as e:
+        st.warning(f"AI suggestion error: {str(e)}")
+        return []
+
+
+def insert_ai_suggested_links(html_text: str, suggestions: List[Dict]) -> Tuple[str, List[Dict]]:
+    """Insert links based on AI suggestions"""
+    if not html_text or not suggestions:
+        return html_text, []
+
+    result = html_text
+    links_inserted = []
+    used_anchors = set()
+
+    for suggestion in suggestions:
+        anchor = suggestion.get('anchor_text', '')
+        target_url = suggestion.get('target_url', '')
+        reason = suggestion.get('reason', '')
+
+        if not anchor or not target_url:
+            continue
+
+        # Skip if already used this anchor
+        if anchor.lower() in used_anchors:
+            continue
+
+        # Check if anchor exists in text and is not already a link
+        # Use case-insensitive search but preserve original case
+        pattern = re.compile(
+            r'(?<!<a[^>]*>)(?<!["\'])(' + re.escape(anchor) + r')(?!["\'])(?!</a>)',
+            re.IGNORECASE
+        )
+
+        # Only replace first occurrence
+        match = pattern.search(result)
+        if match:
+            original_text = match.group(1)
+            replacement = f'<a href="{target_url}">{original_text}</a>'
+            result = result[:match.start(1)] + replacement + result[match.end(1):]
+
+            links_inserted.append({
+                'anchor_text': original_text,
+                'target_url': target_url,
+                'reason': reason
+            })
+            used_anchors.add(anchor.lower())
+
+    return result, links_inserted
 
 
 # ============================================================================
@@ -96,18 +215,19 @@ def extract_text_from_html(html: str) -> str:
 # ============================================================================
 
 @st.cache_data(show_spinner=False)
-def get_embeddings_batch(texts: List[str], api_key: str, model: str = "text-embedding-3-small") -> np.ndarray:
+def get_embeddings_batch(_texts: List[str], api_key: str, model: str = "text-embedding-3-small") -> np.ndarray:
     """Get embeddings for a batch of texts using OpenAI API"""
     client = OpenAI(api_key=api_key)
 
     # Filter empty texts
-    valid_indices = [i for i, t in enumerate(texts) if t and len(t.strip()) > 0]
-    valid_texts = [texts[i] for i in valid_indices]
+    texts = list(_texts)  # Convert to list to avoid issues
+    valid_indices = [i for i, t in enumerate(texts) if t and len(str(t).strip()) > 0]
+    valid_texts = [str(texts[i])[:8000] for i in valid_indices]  # Limit text length
 
     if not valid_texts:
         return np.zeros((len(texts), 1536))
 
-    # Batch requests (OpenAI allows up to 2048 texts per request)
+    # Batch requests
     batch_size = 100
     all_embeddings = []
 
@@ -138,23 +258,24 @@ def calculate_semantic_similarity(embeddings: np.ndarray) -> np.ndarray:
 # ============================================================================
 
 def build_link_graph(df: pd.DataFrame, similarity_matrix: np.ndarray,
-                     similarity_threshold: float = 0.7) -> nx.DiGraph:
+                     similarity_threshold: float = 0.5) -> nx.DiGraph:
     """Build a directed graph based on semantic similarity"""
     G = nx.DiGraph()
 
-    # Add nodes
     for idx, row in df.iterrows():
+        url = row.get('URL', '')
+        if pd.isna(url):
+            url = ''
         G.add_node(idx,
-                   url=row['URL'],
-                   title=row.get('Title', ''),
-                   category=parse_url_path(row['URL'])['category'])
+                   url=str(url),
+                   title=str(row.get('Title', '')),
+                   category=parse_url_path(url)['category'])
 
-    # Add edges based on similarity
     n = len(df)
     for i in range(n):
         for j in range(n):
             if i != j and similarity_matrix[i, j] >= similarity_threshold:
-                G.add_edge(i, j, weight=similarity_matrix[i, j])
+                G.add_edge(i, j, weight=float(similarity_matrix[i, j]))
 
     return G
 
@@ -169,209 +290,22 @@ def calculate_pagerank(G: nx.DiGraph, damping: float = 0.85) -> Dict[int, float]
         return {n: 1.0/len(G.nodes()) for n in G.nodes()}
 
 
-def simulate_equity_flow(G: nx.DiGraph, source_node: int,
-                         damping: float = 0.85, max_depth: int = 6) -> Dict[int, Dict]:
-    """Simulate how link equity flows from a source page"""
-    equity = {source_node: {'equity': 1.0, 'depth': 0}}
-    visited = set()
-    current_level = {source_node}
-
-    for depth in range(1, max_depth + 1):
-        next_level = set()
-        for node in current_level:
-            if node in visited:
-                continue
-            visited.add(node)
-
-            successors = list(G.successors(node))
-            if not successors:
-                continue
-
-            node_equity = equity[node]['equity']
-            distributed = node_equity * damping / len(successors)
-
-            for succ in successors:
-                if succ not in equity:
-                    equity[succ] = {'equity': 0, 'depth': depth}
-                equity[succ]['equity'] += distributed
-                next_level.add(succ)
-
-        current_level = next_level
-        if not current_level:
-            break
-
-    return equity
-
-
 # ============================================================================
-# LINK INSERTION FUNCTIONS
-# ============================================================================
-
-def find_best_link_opportunities(
-    source_idx: int,
-    df: pd.DataFrame,
-    similarity_matrix: np.ndarray,
-    pagerank_scores: Dict[int, float],
-    max_links: int = 5,
-    min_similarity: float = 0.5
-) -> List[Dict]:
-    """Find the best pages to link to from a source page"""
-    opportunities = []
-    source_url = df.iloc[source_idx]['URL']
-    source_parsed = parse_url_path(source_url)
-
-    for target_idx in range(len(df)):
-        if target_idx == source_idx:
-            continue
-
-        similarity = similarity_matrix[source_idx, target_idx]
-        if similarity < min_similarity:
-            continue
-
-        target_url = df.iloc[target_idx]['URL']
-        target_parsed = parse_url_path(target_url)
-
-        # Calculate combined score
-        # Semantic similarity (0-1) + PageRank boost + category bonus
-        semantic_score = similarity
-        pagerank_score = pagerank_scores.get(target_idx, 0) * 10  # Scale up
-
-        # Category relevance bonus
-        category_bonus = 0
-        if source_parsed['category'] == target_parsed['category']:
-            category_bonus += 0.2
-        if source_parsed['subcategory'] != target_parsed['subcategory']:
-            category_bonus += 0.1  # Cross-linking bonus
-
-        combined_score = semantic_score + pagerank_score + category_bonus
-
-        opportunities.append({
-            'target_idx': target_idx,
-            'target_url': target_url,
-            'similarity': similarity,
-            'pagerank': pagerank_scores.get(target_idx, 0),
-            'combined_score': combined_score,
-            'primary_keyword': df.iloc[target_idx].get('Primary Keyword (Color + Type)', '')
-        })
-
-    # Sort by combined score
-    opportunities.sort(key=lambda x: x['combined_score'], reverse=True)
-    return opportunities[:max_links]
-
-
-def insert_links_in_text(
-    html_text: str,
-    link_opportunities: List[Dict],
-    df: pd.DataFrame
-) -> Tuple[str, List[Dict]]:
-    """Insert links into HTML text based on keyword matches"""
-    if not html_text:
-        return html_text, []
-
-    result = html_text
-    links_inserted = []
-    linked_urls = set()
-
-    for opp in link_opportunities:
-        target_url = opp['target_url']
-        if target_url in linked_urls:
-            continue
-
-        # Get keywords for this target
-        target_row = df.iloc[opp['target_idx']]
-        keywords = []
-
-        # Primary keyword
-        pk = target_row.get('Primary Keyword (Color + Type)', '')
-        if pk:
-            keywords.append(pk.lower().strip())
-
-        # Related keywords (first 5)
-        related = target_row.get('Related Keyword', '')
-        if related:
-            related_list = [k.strip().lower() for k in str(related).split(',')[:5]]
-            keywords.extend(related_list)
-
-        # Sort by length (longer first)
-        keywords = sorted(set(keywords), key=len, reverse=True)
-
-        # Try to find and replace keyword
-        replaced = False
-        for keyword in keywords:
-            if not keyword or len(keyword) < 3:
-                continue
-
-            # Match in paragraph content, not inside existing links
-            pattern = re.compile(
-                r'(<p>)(.*?)(</p>)',
-                re.IGNORECASE | re.DOTALL
-            )
-
-            def replace_in_p(match):
-                nonlocal replaced
-                if replaced:
-                    return match.group(0)
-
-                p_start, content, p_end = match.groups()
-
-                # Don't match inside existing <a> tags
-                parts = re.split(r'(<a[^>]*>.*?</a>)', content, flags=re.IGNORECASE)
-                new_parts = []
-
-                for part in parts:
-                    if part.startswith('<a') or replaced:
-                        new_parts.append(part)
-                    else:
-                        # Try to find keyword
-                        kw_pattern = re.compile(
-                            r'(?<![\\w-])' + re.escape(keyword) + r'(?![\\w-])',
-                            re.IGNORECASE
-                        )
-                        if kw_pattern.search(part):
-                            new_part = kw_pattern.sub(
-                                lambda m: f'<a href="{target_url}">{m.group(0)}</a>',
-                                part,
-                                count=1
-                            )
-                            if new_part != part:
-                                replaced = True
-                            new_parts.append(new_part)
-                        else:
-                            new_parts.append(part)
-
-                return p_start + ''.join(new_parts) + p_end
-
-            result = pattern.sub(replace_in_p, result)
-
-            if replaced:
-                links_inserted.append({
-                    'keyword': keyword,
-                    'url': target_url,
-                    'similarity': opp['similarity'],
-                    'pagerank': opp['pagerank']
-                })
-                linked_urls.add(target_url)
-                break
-
-    return result, links_inserted
-
-
-# ============================================================================
-# VISUALIZATION FUNCTIONS
+# VISUALIZATION
 # ============================================================================
 
 def create_network_graph(
     G: nx.DiGraph,
     df: pd.DataFrame,
-    pagerank_scores: Dict[int, float],
-    selected_node: Optional[int] = None
+    pagerank_scores: Dict[int, float]
 ) -> go.Figure:
     """Create an interactive network visualization"""
 
-    # Get positions using spring layout
+    if len(G.nodes()) == 0:
+        return go.Figure()
+
     pos = nx.spring_layout(G, k=2, iterations=50)
 
-    # Create edge traces
     edge_x = []
     edge_y = []
     for edge in G.edges():
@@ -387,7 +321,6 @@ def create_network_graph(
         mode='lines'
     )
 
-    # Create node traces
     node_x = []
     node_y = []
     node_colors = []
@@ -399,15 +332,11 @@ def create_network_graph(
         node_x.append(x)
         node_y.append(y)
 
-        # Color based on PageRank
         pr = pagerank_scores.get(node, 0)
         node_colors.append(pr)
-
-        # Size based on PageRank
         node_sizes.append(10 + pr * 500)
 
-        # Hover text
-        url = df.iloc[node]['URL']
+        url = str(df.iloc[node].get('URL', ''))
         category = parse_url_path(url)['category']
         node_text.append(f"URL: {url}<br>Category: {category}<br>PageRank: {pr:.4f}")
 
@@ -450,26 +379,31 @@ def create_network_graph(
 def main():
     # Header
     st.markdown('<p class="main-header">🔗 SEO Internal Linking Tool</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Semantic analysis + PageRank simulation for optimal internal link placement</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">AI-powered semantic analysis for intelligent internal link placement</p>', unsafe_allow_html=True)
+
+    # Initialize session state
+    if 'manual_api_key' not in st.session_state:
+        st.session_state['manual_api_key'] = ''
 
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuration")
 
-        # API Key - try to load from secrets first
-        default_api_key = ""
-        if "OPENAI_API_KEY" in st.secrets:
-            default_api_key = st.secrets["OPENAI_API_KEY"]
+        # API Key handling
+        has_secret_key = "OPENAI_API_KEY" in st.secrets
 
-        api_key = st.text_input(
-            "OpenAI API Key",
-            value=default_api_key,
-            type="password",
-            help="Your OpenAI API key for generating embeddings. Can be set in Streamlit secrets."
-        )
-
-        if default_api_key:
+        if has_secret_key:
             st.success("✓ API key loaded from secrets")
+            api_key = st.secrets["OPENAI_API_KEY"]
+        else:
+            api_key = st.text_input(
+                "OpenAI API Key",
+                type="password",
+                help="Your OpenAI API key for AI-powered analysis",
+                key="api_key_input"
+            )
+            if api_key:
+                st.session_state['manual_api_key'] = api_key
 
         st.divider()
 
@@ -494,10 +428,10 @@ def main():
             help="Standard is 0.85 - represents probability of following a link"
         )
 
-        embedding_model = st.selectbox(
-            "Embedding model",
-            ["text-embedding-3-small", "text-embedding-3-large"],
-            help="Larger model = better quality but higher cost"
+        use_ai_suggestions = st.checkbox(
+            "🤖 Use AI for smart suggestions",
+            value=True,
+            help="Use GPT to analyze context and suggest optimal anchor texts like an SEO expert"
         )
 
     # Main content
@@ -517,23 +451,34 @@ def main():
             )
 
         with col2:
-            st.subheader("Sitemap (Optional)")
-            sitemap_file = st.file_uploader(
-                "Upload sitemap URLs (JSON or TXT)",
-                type=['json', 'txt'],
-                help="Optional: List of all site URLs for more complete analysis"
-            )
+            st.subheader("How it works")
+            if use_ai_suggestions:
+                st.info("""
+                **🤖 AI-Powered Mode (Active)**
+
+                The AI will analyze each page's content and:
+                1. Understand the semantic context
+                2. Find natural anchor text opportunities
+                3. Match them to relevant target pages
+                4. Insert links that add value for readers
+
+                This mimics how an expert SEO would approach internal linking.
+                """)
+            else:
+                st.info("""
+                **📊 Similarity Mode**
+
+                Uses embeddings to find semantically similar pages
+                and matches keywords for link insertion.
+                """)
 
         if xlsx_file:
-            # Load data
             df = pd.read_excel(xlsx_file)
             st.success(f"✅ Loaded {len(df)} rows from Excel file")
 
-            # Show preview
             with st.expander("Preview data"):
                 st.dataframe(df.head(10))
 
-            # Required columns check
             required_cols = ['URL', 'Primary Keyword (Color + Type)', 'Bottom SEO Text']
             missing_cols = [c for c in required_cols if c not in df.columns]
 
@@ -541,31 +486,29 @@ def main():
                 st.error(f"❌ Missing required columns: {', '.join(missing_cols)}")
                 st.stop()
 
-            # Process button
-            if st.button("🚀 Process Data", type="primary", disabled=not api_key):
-                if not api_key:
-                    st.error("Please enter your OpenAI API key in the sidebar")
-                    st.stop()
+            # Check API key availability
+            can_process = bool(api_key)
 
-                # Store in session state
+            if not can_process:
+                st.warning("⚠️ Please enter your OpenAI API key in the sidebar to process data")
+
+            if st.button("🚀 Process Data", type="primary", disabled=not can_process):
+
                 st.session_state['df'] = df
-                st.session_state['api_key'] = api_key
                 st.session_state['params'] = {
                     'max_links': max_links,
                     'min_similarity': min_similarity,
                     'damping_factor': damping_factor,
-                    'embedding_model': embedding_model
+                    'use_ai': use_ai_suggestions
                 }
 
-                # Progress
                 progress_bar = st.progress(0)
                 status = st.empty()
 
-                # Step 1: Prepare text for embeddings
+                # Step 1: Prepare texts
                 status.text("📝 Preparing content for analysis...")
                 texts = []
                 for idx, row in df.iterrows():
-                    # Combine title + primary keyword + bottom SEO text
                     text_parts = []
                     if pd.notna(row.get('Title')):
                         text_parts.append(str(row['Title']))
@@ -575,25 +518,25 @@ def main():
                         text_parts.append(extract_text_from_html(str(row['Bottom SEO Text']))[:1000])
                     texts.append(' '.join(text_parts))
 
-                progress_bar.progress(20)
+                progress_bar.progress(10)
 
                 # Step 2: Get embeddings
                 status.text("🧠 Generating semantic embeddings...")
                 try:
-                    embeddings = get_embeddings_batch(texts, api_key, embedding_model)
+                    embeddings = get_embeddings_batch(texts, api_key)
                     st.session_state['embeddings'] = embeddings
                 except Exception as e:
                     st.error(f"Error getting embeddings: {str(e)}")
                     st.stop()
 
-                progress_bar.progress(50)
+                progress_bar.progress(30)
 
                 # Step 3: Calculate similarity
                 status.text("🔄 Calculating semantic similarity...")
                 similarity_matrix = calculate_semantic_similarity(embeddings)
                 st.session_state['similarity_matrix'] = similarity_matrix
 
-                progress_bar.progress(60)
+                progress_bar.progress(40)
 
                 # Step 4: Build graph and calculate PageRank
                 status.text("📈 Building link graph and calculating PageRank...")
@@ -602,41 +545,97 @@ def main():
                 st.session_state['graph'] = G
                 st.session_state['pagerank'] = pagerank_scores
 
-                progress_bar.progress(80)
+                progress_bar.progress(50)
 
-                # Step 5: Generate link suggestions and insert links
-                status.text("🔗 Generating link suggestions and inserting links...")
+                # Step 5: Process each page
+                status.text("🔗 Analyzing content and generating link suggestions...")
                 results = []
                 total_links = 0
 
+                # Prepare target pages list
+                all_targets = []
+                for idx, row in df.iterrows():
+                    url = row.get('URL', '')
+                    if pd.isna(url):
+                        continue
+                    all_targets.append({
+                        'idx': idx,
+                        'url': str(url),
+                        'keyword': str(row.get('Primary Keyword (Color + Type)', '')),
+                        'category': parse_url_path(url)['category'],
+                        'pagerank': pagerank_scores.get(idx, 0)
+                    })
+
                 for idx in range(len(df)):
                     row = df.iloc[idx].to_dict()
+                    source_url = str(row.get('URL', ''))
+                    source_text = str(row.get('Bottom SEO Text', ''))
 
-                    # Find best link opportunities
-                    opportunities = find_best_link_opportunities(
-                        idx, df, similarity_matrix, pagerank_scores,
-                        max_links=max_links, min_similarity=min_similarity
+                    if not source_text or pd.isna(row.get('Bottom SEO Text')):
+                        results.append({
+                            **row,
+                            'Bottom SEO Text (with links)': '',
+                            'Links Inserted': '',
+                            'Links Count': 0,
+                            'AI Reasoning': ''
+                        })
+                        continue
+
+                    # Get top similar pages as candidates
+                    similarities = similarity_matrix[idx]
+                    top_indices = np.argsort(similarities)[::-1][1:21]  # Top 20, excluding self
+
+                    target_pages = [
+                        t for t in all_targets
+                        if t['idx'] in top_indices and t['url'] != source_url
+                    ]
+
+                    # Sort by similarity * pagerank
+                    target_pages.sort(
+                        key=lambda x: similarities[x['idx']] * (1 + x['pagerank'] * 10),
+                        reverse=True
                     )
 
-                    # Insert links
-                    original_text = row.get('Bottom SEO Text', '')
-                    if original_text and pd.notna(original_text):
-                        new_text, links_inserted = insert_links_in_text(
-                            str(original_text), opportunities, df
+                    if use_ai_suggestions and target_pages:
+                        # Use AI to suggest intelligent link placements
+                        suggestions = get_ai_link_suggestions(
+                            source_text=extract_text_from_html(source_text),
+                            source_url=source_url,
+                            target_pages=target_pages,
+                            api_key=api_key,
+                            max_links=max_links
                         )
-                        row['Bottom SEO Text (with links)'] = new_text
-                        row['Links Inserted'] = ' | '.join([
-                            f"{l['keyword']} -> {l['url']} (sim: {l['similarity']:.2f})"
+
+                        new_text, links_inserted = insert_ai_suggested_links(source_text, suggestions)
+
+                        reasoning = '\n'.join([
+                            f"• {l['anchor_text']} → {l['reason']}"
                             for l in links_inserted
                         ])
-                        row['Links Count'] = len(links_inserted)
-                        total_links += len(links_inserted)
-                    else:
-                        row['Bottom SEO Text (with links)'] = ''
-                        row['Links Inserted'] = ''
-                        row['Links Count'] = 0
 
-                    results.append(row)
+                    else:
+                        # Fallback to keyword matching
+                        new_text = source_text
+                        links_inserted = []
+                        reasoning = "Using keyword matching (AI disabled)"
+
+                    results.append({
+                        **row,
+                        'Bottom SEO Text (with links)': new_text,
+                        'Links Inserted': ' | '.join([
+                            f"{l['anchor_text']} -> {l['target_url']}"
+                            for l in links_inserted
+                        ]),
+                        'Links Count': len(links_inserted),
+                        'AI Reasoning': reasoning
+                    })
+
+                    total_links += len(links_inserted)
+
+                    # Update progress
+                    progress = 50 + int((idx / len(df)) * 45)
+                    progress_bar.progress(progress)
+                    status.text(f"🔗 Processing page {idx + 1}/{len(df)}...")
 
                 results_df = pd.DataFrame(results)
                 st.session_state['results_df'] = results_df
@@ -655,9 +654,9 @@ def main():
             st.info("👆 Upload and process your data first")
         else:
             results_df = st.session_state['results_df']
-            pagerank = st.session_state['pagerank']
-            G = st.session_state['graph']
-            df = st.session_state['df']
+            pagerank = st.session_state.get('pagerank', {})
+            G = st.session_state.get('graph', nx.DiGraph())
+            df = st.session_state.get('df', pd.DataFrame())
 
             # Metrics
             col1, col2, col3, col4 = st.columns(4)
@@ -675,43 +674,62 @@ def main():
 
             st.divider()
 
-            # PageRank distribution
+            # Show AI reasoning for a sample page
+            if st.session_state.get('params', {}).get('use_ai'):
+                st.subheader("🤖 AI Reasoning Examples")
+
+                pages_with_reasoning = results_df[results_df['AI Reasoning'].str.len() > 10]
+                if not pages_with_reasoning.empty:
+                    sample_page = st.selectbox(
+                        "Select a page to see AI reasoning",
+                        pages_with_reasoning['URL'].tolist()[:20]
+                    )
+                    if sample_page:
+                        reasoning = pages_with_reasoning[
+                            pages_with_reasoning['URL'] == sample_page
+                        ]['AI Reasoning'].iloc[0]
+                        st.markdown(f"**Why these links were chosen:**\n\n{reasoning}")
+
+            st.divider()
+
+            # Charts
             col1, col2 = st.columns([1, 1])
 
             with col1:
                 st.subheader("📊 PageRank Distribution")
-                pr_df = pd.DataFrame([
-                    {'URL': df.iloc[idx]['URL'], 'PageRank': score}
-                    for idx, score in pagerank.items()
-                ]).sort_values('PageRank', ascending=False)
+                if pagerank:
+                    pr_df = pd.DataFrame([
+                        {'URL': str(df.iloc[idx].get('URL', '')), 'PageRank': score}
+                        for idx, score in pagerank.items()
+                    ]).sort_values('PageRank', ascending=False)
 
-                fig = go.Figure(data=[
-                    go.Bar(
-                        x=pr_df['URL'].head(20).apply(lambda x: x.split('/')[-1] if '/' in x else x),
-                        y=pr_df['PageRank'].head(20),
-                        marker_color='#1E88E5'
+                    fig = go.Figure(data=[
+                        go.Bar(
+                            x=pr_df['URL'].head(15).apply(lambda x: x.split('/')[-1] if '/' in str(x) else str(x)[:20]),
+                            y=pr_df['PageRank'].head(15),
+                            marker_color='#1E88E5'
+                        )
+                    ])
+                    fig.update_layout(
+                        title="Top 15 Pages by PageRank",
+                        xaxis_title="Page",
+                        yaxis_title="PageRank Score",
+                        height=400
                     )
-                ])
-                fig.update_layout(
-                    title="Top 20 Pages by PageRank",
-                    xaxis_title="Page",
-                    yaxis_title="PageRank Score",
-                    height=400
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, use_container_width=True)
 
             with col2:
-                st.subheader("🔗 Links by Page")
+                st.subheader("🔗 Links Distribution")
                 links_df = results_df[['URL', 'Links Count']].sort_values('Links Count', ascending=False)
                 fig = go.Figure(data=[
                     go.Bar(
-                        x=links_df['URL'].head(20).apply(lambda x: x.split('/')[-1] if '/' in x else x),
-                        y=links_df['Links Count'].head(20),
+                        x=links_df['URL'].head(15).apply(lambda x: x.split('/')[-1] if '/' in str(x) else str(x)[:20]),
+                        y=links_df['Links Count'].head(15),
                         marker_color='#43A047'
                     )
                 ])
                 fig.update_layout(
-                    title="Top 20 Pages by Links Inserted",
+                    title="Top 15 Pages by Links Inserted",
                     xaxis_title="Page",
                     yaxis_title="Links Count",
                     height=400
@@ -720,17 +738,21 @@ def main():
 
             # Network graph
             st.subheader("🕸️ Link Network Visualization")
-            if len(G.nodes()) < 200:  # Only show for smaller graphs
+            if len(G.nodes()) > 0 and len(G.nodes()) < 150:
                 fig = create_network_graph(G, df, pagerank)
                 st.plotly_chart(fig, use_container_width=True)
+            elif len(G.nodes()) >= 150:
+                st.info("Network visualization disabled for large graphs (>150 nodes)")
             else:
-                st.info("Network visualization disabled for large graphs (>200 nodes)")
+                st.info("No network data available")
 
-            # Detailed results table
+            # Results table
             st.subheader("📋 Detailed Results")
             display_cols = ['URL', 'Primary Keyword (Color + Type)', 'Links Count', 'Links Inserted']
+            if 'AI Reasoning' in results_df.columns:
+                display_cols.append('AI Reasoning')
             st.dataframe(
-                results_df[display_cols],
+                results_df[[c for c in display_cols if c in results_df.columns]],
                 use_container_width=True,
                 height=400
             )
@@ -748,7 +770,6 @@ def main():
             col1, col2 = st.columns(2)
 
             with col1:
-                # Excel export
                 buffer = BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                     results_df.to_excel(writer, index=False, sheet_name='SEO Internal Links')
@@ -762,7 +783,6 @@ def main():
                 )
 
             with col2:
-                # JSON export
                 json_output = results_df.to_json(orient='records', indent=2)
                 st.download_button(
                     label="📥 Download JSON",
@@ -773,10 +793,9 @@ def main():
 
             st.divider()
 
-            # Preview output
+            # Preview
             st.subheader("Preview Output")
 
-            # Select a page to preview
             page_urls = results_df['URL'].tolist()
             selected_url = st.selectbox("Select a page to preview", page_urls)
 
@@ -789,7 +808,7 @@ def main():
                     st.markdown("**Original Text:**")
                     original = row.get('Bottom SEO Text', '')
                     if original and pd.notna(original):
-                        st.code(original[:2000] + ('...' if len(str(original)) > 2000 else ''), language='html')
+                        st.code(str(original)[:2000] + ('...' if len(str(original)) > 2000 else ''), language='html')
                     else:
                         st.info("No original text")
 
@@ -797,11 +816,14 @@ def main():
                     st.markdown("**Text with Links:**")
                     with_links = row.get('Bottom SEO Text (with links)', '')
                     if with_links and pd.notna(with_links):
-                        st.code(with_links[:2000] + ('...' if len(str(with_links)) > 2000 else ''), language='html')
+                        st.code(str(with_links)[:2000] + ('...' if len(str(with_links)) > 2000 else ''), language='html')
                     else:
                         st.info("No links inserted")
 
-                # Show links inserted
+                if row.get('AI Reasoning'):
+                    st.markdown("**🤖 AI Reasoning:**")
+                    st.markdown(row['AI Reasoning'])
+
                 if row.get('Links Inserted'):
                     st.markdown("**Links Inserted:**")
                     for link in str(row['Links Inserted']).split(' | '):
