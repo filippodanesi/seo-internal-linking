@@ -251,26 +251,41 @@ def insert_ai_suggested_links(html_text: str, suggestions: List[Dict]) -> Tuple[
         if anchor.lower() in used_anchors:
             continue
 
-        # Check if anchor exists in text and is not already a link
-        # Use case-insensitive search but preserve original case
-        pattern = re.compile(
-            r'(?<!<a[^>]*>)(?<!["\'])(' + re.escape(anchor) + r')(?!["\'])(?!</a>)',
-            re.IGNORECASE
-        )
+        # Find anchor in text, avoiding existing links
+        # Strategy: split by <a>...</a> tags, only search in non-link parts
+        parts = re.split(r'(<a\s[^>]*>.*?</a>)', result, flags=re.IGNORECASE | re.DOTALL)
 
-        # Only replace first occurrence
-        match = pattern.search(result)
-        if match:
-            original_text = match.group(1)
-            replacement = f'<a href="{target_url}">{original_text}</a>'
-            result = result[:match.start(1)] + replacement + result[match.end(1):]
+        found = False
+        new_parts = []
 
-            links_inserted.append({
-                'anchor_text': original_text,
-                'target_url': target_url,
-                'reason': reason
-            })
-            used_anchors.add(anchor.lower())
+        for part in parts:
+            if found or part.startswith('<a ') or part.startswith('<a>'):
+                # Already found or this is an existing link - keep as is
+                new_parts.append(part)
+            else:
+                # Search for anchor in this non-link part
+                pattern = re.compile(re.escape(anchor), re.IGNORECASE)
+                match = pattern.search(part)
+
+                if match:
+                    # Replace first occurrence
+                    original_text = match.group(0)
+                    replacement = f'<a href="{target_url}">{original_text}</a>'
+                    new_part = part[:match.start()] + replacement + part[match.end():]
+                    new_parts.append(new_part)
+                    found = True
+
+                    links_inserted.append({
+                        'anchor_text': original_text,
+                        'target_url': target_url,
+                        'reason': reason
+                    })
+                    used_anchors.add(anchor.lower())
+                else:
+                    new_parts.append(part)
+
+        if found:
+            result = ''.join(new_parts)
 
     return result, links_inserted
 
