@@ -456,12 +456,20 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
 
-        # API Key
+        # API Key - try to load from secrets first
+        default_api_key = ""
+        if "OPENAI_API_KEY" in st.secrets:
+            default_api_key = st.secrets["OPENAI_API_KEY"]
+
         api_key = st.text_input(
             "OpenAI API Key",
+            value=default_api_key,
             type="password",
-            help="Your OpenAI API key for generating embeddings"
+            help="Your OpenAI API key for generating embeddings. Can be set in Streamlit secrets."
         )
+
+        if default_api_key:
+            st.success("✓ API key loaded from secrets")
 
         st.divider()
 
