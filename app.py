@@ -1060,11 +1060,13 @@ def main():
         ai_model = st.selectbox(
             "AI Model",
             [
+                "gpt-5.1",
+                "gpt-5-mini",
                 "gpt-4o",
                 "gpt-4o-mini",
             ],
             index=0,
-            help="GPT-4o is the most intelligent model. GPT-4o-mini for faster/cheaper processing."
+            help="GPT-5.1 is the most intelligent model. GPT-5-mini for faster/cheaper processing."
         )
 
     # =========================================================================
