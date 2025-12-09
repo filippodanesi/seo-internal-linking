@@ -17,8 +17,15 @@ import networkx as nx
 import plotly.graph_objects as go
 from sklearn.metrics.pairwise import cosine_similarity
 from openai import OpenAI
-import anthropic
 import xml.etree.ElementTree as ET
+
+# Lazy import for anthropic to avoid errors if not installed
+try:
+    import anthropic
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    ANTHROPIC_AVAILABLE = False
+    anthropic = None
 
 # Page config
 st.set_page_config(
@@ -1019,11 +1026,15 @@ def main():
         st.divider()
 
         # AI Provider selection (moved here so API key field changes accordingly)
+        provider_options = ["OpenAI"]
+        if ANTHROPIC_AVAILABLE:
+            provider_options.append("Anthropic")
+
         ai_provider = st.selectbox(
             "🤖 AI Provider",
-            ["OpenAI", "Anthropic"],
+            provider_options,
             index=0,
-            help="Choose between OpenAI (GPT) or Anthropic (Claude) models"
+            help="Choose between OpenAI (GPT) or Anthropic (Claude) models" if ANTHROPIC_AVAILABLE else "OpenAI models (install anthropic package for Claude support)"
         )
 
         # API Key handling based on provider
