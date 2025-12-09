@@ -439,16 +439,16 @@ def main():
             ai_model = st.selectbox(
                 "AI Model",
                 [
+                    "gpt-5.1",
+                    "gpt-5-mini",
                     "gpt-4o",
                     "gpt-4o-mini",
-                    "gpt-4-turbo",
-                    "gpt-5.1",  # When available
                 ],
                 index=0,
-                help="GPT-4o recommended for best quality. GPT-5.1 when available."
+                help="GPT-5.1 is the most intelligent model. GPT-5-mini for faster/cheaper processing."
             )
         else:
-            ai_model = "gpt-4o"
+            ai_model = "gpt-5.1"
 
     # Main content
     tab1, tab2, tab3 = st.tabs(["📤 Upload & Process", "📊 Analysis", "📥 Export"])
