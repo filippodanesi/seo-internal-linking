@@ -1,6 +1,7 @@
 """
 SEO Internal Linking Tool
 AI-powered semantic analysis for intelligent internal link placement
+Supports both E-commerce PLP mode and Blog mode
 """
 
 import streamlit as st
@@ -9,11 +10,14 @@ import numpy as np
 from io import BytesIO
 import json
 import re
+import requests
+from urllib.parse import urlparse, urljoin
 from typing import List, Dict, Tuple, Optional
 import networkx as nx
 import plotly.graph_objects as go
 from sklearn.metrics.pairwise import cosine_similarity
 from openai import OpenAI
+import xml.etree.ElementTree as ET
 
 # Page config
 st.set_page_config(
@@ -260,6 +264,308 @@ def is_plp_url(url: str) -> bool:
             return True
 
     return False
+
+
+# ============================================================================
+# BLOG MODE FUNCTIONS
+# ============================================================================
+
+def fetch_sitemap_urls(sitemap_url: str, prefix_filter: str = "", max_urls: int = 300) -> List[Dict]:
+    """
+    Fetch URLs from an XML sitemap.
+    Returns list of dicts with url, title (from lastmod or path), and description.
+    """
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (compatible; SEOInternalLinkingBot/1.0)'
+        }
+        response = requests.get(sitemap_url, headers=headers, timeout=30)
+        response.raise_for_status()
+
+        urls = []
+        content = response.text
+
+        # Parse XML sitemap
+        # Handle namespace
+        content_clean = re.sub(r'\sxmlns="[^"]+"', '', content, count=1)
+
+        try:
+            root = ET.fromstring(content_clean)
+        except ET.ParseError:
+            # Fallback: extract URLs with regex
+            loc_matches = re.findall(r'<loc>(.*?)</loc>', content)
+            for url in loc_matches[:max_urls]:
+                if prefix_filter and prefix_filter not in url:
+                    continue
+                urls.append({
+                    'url': url.strip(),
+                    'title': extract_title_from_url(url),
+                    'description': ''
+                })
+            return urls
+
+        # Find all url elements
+        for url_elem in root.findall('.//url'):
+            loc = url_elem.find('loc')
+            if loc is not None and loc.text:
+                url = loc.text.strip()
+
+                # Apply prefix filter
+                if prefix_filter and prefix_filter not in url:
+                    continue
+
+                # Try to get lastmod for context
+                lastmod = url_elem.find('lastmod')
+                lastmod_text = lastmod.text if lastmod is not None else ''
+
+                urls.append({
+                    'url': url,
+                    'title': extract_title_from_url(url),
+                    'description': f'Last modified: {lastmod_text}' if lastmod_text else ''
+                })
+
+                if len(urls) >= max_urls:
+                    break
+
+        return urls
+
+    except Exception as e:
+        st.error(f"Error fetching sitemap: {str(e)}")
+        return []
+
+
+def extract_title_from_url(url: str) -> str:
+    """Extract a readable title from URL path"""
+    try:
+        parsed = urlparse(url)
+        path_parts = [p for p in parsed.path.split('/') if p]
+
+        if not path_parts:
+            return parsed.netloc
+
+        # Take the last meaningful part and convert to title
+        last_part = path_parts[-1]
+        # Remove file extension
+        last_part = re.sub(r'\.(html?|php|aspx?)$', '', last_part, flags=re.IGNORECASE)
+        # Convert dashes/underscores to spaces and title case
+        title = last_part.replace('-', ' ').replace('_', ' ').title()
+        return title
+    except:
+        return url
+
+
+def scrape_webpage_content(url: str) -> Dict:
+    """
+    Scrape the main content from a webpage.
+    Returns dict with title, description, and body text.
+    """
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+
+        html = response.text
+
+        # Extract title
+        title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+        title = title_match.group(1).strip() if title_match else ''
+
+        # Extract meta description
+        desc_match = re.search(r'<meta[^>]*name=["\']description["\'][^>]*content=["\']([^"\']*)["\']', html, re.IGNORECASE)
+        if not desc_match:
+            desc_match = re.search(r'<meta[^>]*content=["\']([^"\']*)["\'][^>]*name=["\']description["\']', html, re.IGNORECASE)
+        description = desc_match.group(1).strip() if desc_match else ''
+
+        # Extract body content - remove script, style, nav, header, footer
+        body_match = re.search(r'<body[^>]*>(.*?)</body>', html, re.IGNORECASE | re.DOTALL)
+        if body_match:
+            body = body_match.group(1)
+        else:
+            body = html
+
+        # Remove unwanted elements
+        body = re.sub(r'<script[^>]*>.*?</script>', '', body, flags=re.IGNORECASE | re.DOTALL)
+        body = re.sub(r'<style[^>]*>.*?</style>', '', body, flags=re.IGNORECASE | re.DOTALL)
+        body = re.sub(r'<nav[^>]*>.*?</nav>', '', body, flags=re.IGNORECASE | re.DOTALL)
+        body = re.sub(r'<header[^>]*>.*?</header>', '', body, flags=re.IGNORECASE | re.DOTALL)
+        body = re.sub(r'<footer[^>]*>.*?</footer>', '', body, flags=re.IGNORECASE | re.DOTALL)
+        body = re.sub(r'<aside[^>]*>.*?</aside>', '', body, flags=re.IGNORECASE | re.DOTALL)
+        body = re.sub(r'<!--.*?-->', '', body, flags=re.DOTALL)
+
+        # Keep the HTML structure for link insertion, but also get plain text
+        plain_text = re.sub(r'<[^>]+>', ' ', body)
+        plain_text = re.sub(r'\s+', ' ', plain_text).strip()
+
+        return {
+            'title': title,
+            'description': description,
+            'html_content': body.strip(),
+            'plain_text': plain_text[:10000],  # Limit for API
+            'url': url
+        }
+
+    except Exception as e:
+        st.error(f"Error scraping {url}: {str(e)}")
+        return {
+            'title': '',
+            'description': '',
+            'html_content': '',
+            'plain_text': '',
+            'url': url
+        }
+
+
+def get_blog_link_suggestions(
+    target_content: Dict,
+    candidate_pages: List[Dict],
+    api_key: str,
+    max_links: int = 5,
+    model: str = "gpt-4o"
+) -> List[Dict]:
+    """
+    Use GPT to suggest internal links for a blog post.
+    Similar to PLP mode but optimized for blog content.
+    """
+    client = OpenAI(api_key=api_key)
+
+    # Prepare candidates summary
+    candidates_text = "\n".join([
+        f"- URL: {p['url']}\n  Title: {p['title']}\n  Description: {p.get('description', '')}"
+        for p in candidate_pages[:30]
+    ])
+
+    prompt = f"""You are an expert SEO content strategist analyzing a blog post for internal linking opportunities.
+
+TARGET BLOG POST:
+URL: {target_content['url']}
+Title: {target_content['title']}
+
+CONTENT:
+{target_content['plain_text'][:4000]}
+
+AVAILABLE PAGES TO LINK TO:
+{candidates_text}
+
+YOUR TASK:
+Identify {max_links} optimal places to insert internal links that will:
+1. Improve user experience by connecting related content
+2. Boost topical authority and SEO
+3. Feel natural and helpful, not forced
+
+RULES:
+1. ONLY use URLs from the AVAILABLE PAGES list - never invent URLs
+2. NEVER link to the target post itself
+3. Find EXACT phrases in the content that make good anchor texts
+4. Prefer descriptive anchor texts (2-5 words) over single generic words
+5. Don't link words like "here", "click", "this", "read more"
+6. Each URL should only be used ONCE
+7. Distribute links throughout the article, not clustered
+8. If no good match exists for a URL, skip it - quality over quantity
+
+Return your suggestions as a JSON array:
+[
+  {{
+    "anchor_text": "exact phrase from the article to make into a link",
+    "target_url": "URL from the available list",
+    "reason": "brief explanation of why this link adds value"
+  }}
+]
+
+Return ONLY the JSON array, no other text."""
+
+    try:
+        if model.startswith("gpt-5"):
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_completion_tokens=1500
+            )
+        else:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=1500
+            )
+
+        result = response.choices[0].message.content.strip()
+
+        # Parse JSON from response
+        if result.startswith("```"):
+            result = re.sub(r'^```json?\n?', '', result)
+            result = re.sub(r'\n?```$', '', result)
+
+        suggestions = json.loads(result)
+        return suggestions
+
+    except Exception as e:
+        st.warning(f"AI suggestion error: {str(e)}")
+        return []
+
+
+def insert_blog_links(html_content: str, suggestions: List[Dict], source_url: str = "") -> Tuple[str, List[Dict]]:
+    """Insert links into blog HTML content based on AI suggestions"""
+    if not html_content or not suggestions:
+        return html_content, []
+
+    result = html_content
+    links_inserted = []
+    used_anchors = set()
+    used_urls = set()
+
+    for suggestion in suggestions:
+        anchor = suggestion.get('anchor_text', '')
+        target_url = suggestion.get('target_url', '')
+        reason = suggestion.get('reason', '')
+
+        if not anchor or not target_url:
+            continue
+
+        # No self-linking
+        if target_url == source_url:
+            continue
+
+        # No duplicate anchors or URLs
+        if anchor.lower() in used_anchors or target_url in used_urls:
+            continue
+
+        # Split by existing links to avoid nesting
+        parts = re.split(r'(<a\s[^>]*>.*?</a>)', result, flags=re.IGNORECASE | re.DOTALL)
+
+        found = False
+        new_parts = []
+
+        for part in parts:
+            if found or part.lower().startswith('<a ') or part.lower().startswith('<a>'):
+                new_parts.append(part)
+            else:
+                pattern = re.compile(re.escape(anchor), re.IGNORECASE)
+                match = pattern.search(part)
+
+                if match:
+                    original_text = match.group(0)
+                    replacement = f'<a href="{target_url}">{original_text}</a>'
+                    new_part = part[:match.start()] + replacement + part[match.end():]
+                    new_parts.append(new_part)
+                    found = True
+
+                    links_inserted.append({
+                        'anchor_text': original_text,
+                        'target_url': target_url,
+                        'reason': reason
+                    })
+                    used_anchors.add(anchor.lower())
+                    used_urls.add(target_url)
+                else:
+                    new_parts.append(part)
+
+        if found:
+            result = ''.join(new_parts)
+
+    return result, links_inserted
 
 
 def urls_are_semantically_coherent(source_url: str, target_url: str) -> bool:
@@ -653,10 +959,26 @@ def main():
     # Initialize session state
     if 'manual_api_key' not in st.session_state:
         st.session_state['manual_api_key'] = ''
+    if 'app_mode' not in st.session_state:
+        st.session_state['app_mode'] = 'E-commerce (Triumph PLP)'
 
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuration")
+
+        # Mode selection
+        app_mode = st.selectbox(
+            "🎯 Mode",
+            [
+                "E-commerce (Triumph PLP)",
+                "Blog Posts"
+            ],
+            index=0 if st.session_state['app_mode'] == 'E-commerce (Triumph PLP)' else 1,
+            help="Choose the type of content you want to optimize"
+        )
+        st.session_state['app_mode'] = app_mode
+
+        st.divider()
 
         # API Key handling
         has_secret_key = "OPENAI_API_KEY" in st.secrets
@@ -685,40 +1007,290 @@ def main():
             help="Maximum number of internal links to insert per page"
         )
 
-        min_similarity = st.slider(
-            "Min similarity threshold",
-            min_value=0.3, max_value=0.9, value=0.5, step=0.05,
-            help="Minimum semantic similarity to consider for linking"
-        )
+        # Only show these for E-commerce mode
+        if app_mode == "E-commerce (Triumph PLP)":
+            min_similarity = st.slider(
+                "Min similarity threshold",
+                min_value=0.3, max_value=0.9, value=0.5, step=0.05,
+                help="Minimum semantic similarity to consider for linking"
+            )
 
-        damping_factor = st.slider(
-            "PageRank damping factor",
-            min_value=0.5, max_value=0.95, value=0.85, step=0.05,
-            help="Standard is 0.85 - represents probability of following a link"
-        )
+            damping_factor = st.slider(
+                "PageRank damping factor",
+                min_value=0.5, max_value=0.95, value=0.85, step=0.05,
+                help="Standard is 0.85 - represents probability of following a link"
+            )
 
-        use_ai_suggestions = st.checkbox(
-            "🤖 Use AI for smart suggestions",
-            value=True,
-            help="Use GPT to analyze context and suggest optimal anchor texts like an SEO expert"
-        )
-
-        if use_ai_suggestions:
-            ai_model = st.selectbox(
-                "AI Model",
-                [
-                    "gpt-5.1",
-                    "gpt-5-mini",
-                    "gpt-4o",
-                    "gpt-4o-mini",
-                ],
-                index=0,
-                help="GPT-5.1 is the most intelligent model. GPT-5-mini for faster/cheaper processing."
+            use_ai_suggestions = st.checkbox(
+                "🤖 Use AI for smart suggestions",
+                value=True,
+                help="Use GPT to analyze context and suggest optimal anchor texts like an SEO expert"
             )
         else:
-            ai_model = "gpt-5.1"
+            # Blog mode always uses AI
+            min_similarity = 0.5
+            damping_factor = 0.85
+            use_ai_suggestions = True
+            st.info("🤖 Blog mode uses AI-powered semantic analysis")
 
-    # Main content
+        ai_model = st.selectbox(
+            "AI Model",
+            [
+                "gpt-4o",
+                "gpt-4o-mini",
+            ],
+            index=0,
+            help="GPT-4o is the most intelligent model. GPT-4o-mini for faster/cheaper processing."
+        )
+
+    # =========================================================================
+    # BLOG MODE
+    # =========================================================================
+    if app_mode == "Blog Posts":
+        tab1, tab2 = st.tabs(["📤 Process Blog", "📥 Results"])
+
+        with tab1:
+            st.header("Add Internal Links to Blog Posts")
+
+            st.markdown("""
+            This mode helps you automatically add internal links to your blog posts using AI.
+
+            **How it works:**
+            1. Enter your sitemap URL and optional path filter
+            2. Enter the URL of the blog post you want to optimize
+            3. The AI will find relevant pages and suggest natural link placements
+            """)
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                sitemap_url = st.text_input(
+                    "Sitemap URL",
+                    placeholder="https://yourdomain.com/sitemap.xml",
+                    help="Your XML sitemap URL containing all blog posts"
+                )
+
+                prefix_filter = st.text_input(
+                    "Path filter (optional)",
+                    placeholder="/blog/",
+                    help="Only include URLs containing this path (e.g., /blog/, /articles/)"
+                )
+
+                max_sitemap_urls = st.number_input(
+                    "Max URLs to fetch",
+                    min_value=10,
+                    max_value=500,
+                    value=300,
+                    help="Maximum number of URLs to fetch from sitemap"
+                )
+
+            with col2:
+                target_url = st.text_input(
+                    "Target Post URL",
+                    placeholder="https://yourdomain.com/blog/your-post",
+                    help="The blog post you want to add internal links to"
+                )
+
+                st.markdown("---")
+                st.markdown("**Preview Settings**")
+                show_original = st.checkbox("Show original content", value=True)
+
+            # Check if we can proceed
+            can_process = bool(api_key) and bool(sitemap_url) and bool(target_url)
+
+            if not api_key:
+                st.warning("⚠️ Please enter your OpenAI API key in the sidebar")
+            elif not sitemap_url:
+                st.info("👆 Enter your sitemap URL to get started")
+            elif not target_url:
+                st.info("👆 Enter the target blog post URL")
+
+            if st.button("🚀 Process Blog Post", type="primary", disabled=not can_process):
+                progress_bar = st.progress(0)
+                status = st.empty()
+
+                # Step 1: Fetch sitemap
+                status.text("📥 Fetching sitemap URLs...")
+                sitemap_pages = fetch_sitemap_urls(sitemap_url, prefix_filter, max_sitemap_urls)
+
+                if not sitemap_pages:
+                    st.error("❌ Could not fetch any URLs from sitemap")
+                    st.stop()
+
+                st.success(f"✅ Found {len(sitemap_pages)} URLs in sitemap")
+                progress_bar.progress(20)
+
+                # Step 2: Scrape target page
+                status.text("📄 Scraping target blog post...")
+                target_content = scrape_webpage_content(target_url)
+
+                if not target_content['plain_text']:
+                    st.error("❌ Could not scrape target page content")
+                    st.stop()
+
+                st.success(f"✅ Scraped: {target_content['title']}")
+                progress_bar.progress(40)
+
+                # Step 3: Get embeddings for semantic search
+                status.text("🧠 Finding semantically relevant pages...")
+
+                # Prepare texts for embedding
+                target_text = f"{target_content['title']} {target_content['description']} {target_content['plain_text'][:2000]}"
+                candidate_texts = [
+                    f"{p['title']} {p.get('description', '')}"
+                    for p in sitemap_pages
+                ]
+
+                # Get embeddings
+                all_texts = [target_text] + candidate_texts
+                try:
+                    embeddings = get_embeddings_batch(all_texts, api_key)
+                except Exception as e:
+                    st.error(f"Error getting embeddings: {str(e)}")
+                    st.stop()
+
+                progress_bar.progress(60)
+
+                # Calculate similarity and get top candidates
+                target_embedding = embeddings[0:1]
+                candidate_embeddings = embeddings[1:]
+
+                similarities = cosine_similarity(target_embedding, candidate_embeddings)[0]
+
+                # Get top 30 most similar (excluding the target itself)
+                top_indices = np.argsort(similarities)[::-1]
+
+                top_candidates = []
+                for idx in top_indices[:30]:
+                    page = sitemap_pages[idx]
+                    if page['url'] != target_url:  # Exclude self
+                        page['similarity'] = float(similarities[idx])
+                        top_candidates.append(page)
+
+                st.success(f"✅ Found {len(top_candidates)} relevant pages")
+                progress_bar.progress(70)
+
+                # Step 4: Get AI link suggestions
+                status.text("🤖 AI is analyzing content for link opportunities...")
+
+                suggestions = get_blog_link_suggestions(
+                    target_content=target_content,
+                    candidate_pages=top_candidates,
+                    api_key=api_key,
+                    max_links=max_links,
+                    model=ai_model
+                )
+
+                progress_bar.progress(85)
+
+                # Step 5: Insert links
+                status.text("🔗 Inserting links...")
+
+                updated_html, links_inserted = insert_blog_links(
+                    target_content['html_content'],
+                    suggestions,
+                    target_url
+                )
+
+                progress_bar.progress(100)
+                status.text("✅ Done!")
+
+                # Store results
+                st.session_state['blog_results'] = {
+                    'target_url': target_url,
+                    'target_title': target_content['title'],
+                    'original_html': target_content['html_content'],
+                    'updated_html': updated_html,
+                    'links_inserted': links_inserted,
+                    'top_candidates': top_candidates[:10],
+                    'show_original': show_original
+                }
+
+                st.success(f"🎉 Inserted {len(links_inserted)} internal links!")
+                st.balloons()
+
+        with tab2:
+            st.header("Results")
+
+            if 'blog_results' not in st.session_state:
+                st.info("👆 Process a blog post first to see results")
+            else:
+                results = st.session_state['blog_results']
+
+                # Metrics
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Links Inserted", len(results['links_inserted']))
+                with col2:
+                    st.metric("Candidates Found", len(results['top_candidates']))
+                with col3:
+                    st.metric("Target", results['target_title'][:30] + "...")
+
+                st.divider()
+
+                # Links inserted
+                st.subheader("🔗 Links Inserted")
+                if results['links_inserted']:
+                    for i, link in enumerate(results['links_inserted'], 1):
+                        with st.expander(f"{i}. {link['anchor_text']} → {link['target_url'].split('/')[-1]}"):
+                            st.markdown(f"**Anchor:** {link['anchor_text']}")
+                            st.markdown(f"**URL:** {link['target_url']}")
+                            st.markdown(f"**Reason:** {link['reason']}")
+                else:
+                    st.info("No links were inserted. The AI couldn't find suitable placements.")
+
+                st.divider()
+
+                # Content comparison
+                st.subheader("📝 Content Preview")
+
+                if results.get('show_original', True):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("**Original HTML:**")
+                        st.code(results['original_html'][:3000] + ('...' if len(results['original_html']) > 3000 else ''), language='html')
+                    with col2:
+                        st.markdown("**Updated HTML:**")
+                        st.code(results['updated_html'][:3000] + ('...' if len(results['updated_html']) > 3000 else ''), language='html')
+                else:
+                    st.markdown("**Updated HTML:**")
+                    st.code(results['updated_html'][:5000] + ('...' if len(results['updated_html']) > 5000 else ''), language='html')
+
+                st.divider()
+
+                # Download
+                st.subheader("📥 Download")
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.download_button(
+                        label="📥 Download Updated HTML",
+                        data=results['updated_html'],
+                        file_name=f"updated_{results['target_url'].split('/')[-1]}.html",
+                        mime="text/html",
+                        type="primary"
+                    )
+
+                with col2:
+                    # JSON export
+                    export_data = {
+                        'target_url': results['target_url'],
+                        'target_title': results['target_title'],
+                        'links_inserted': results['links_inserted'],
+                        'updated_html': results['updated_html']
+                    }
+                    st.download_button(
+                        label="📥 Download JSON",
+                        data=json.dumps(export_data, indent=2),
+                        file_name="blog_links_result.json",
+                        mime="application/json"
+                    )
+
+        return  # End of Blog Mode
+
+    # =========================================================================
+    # E-COMMERCE MODE (Original Triumph PLP mode)
+    # =========================================================================
     tab1, tab2, tab3 = st.tabs(["📤 Upload & Process", "📊 Analysis", "📥 Export"])
 
     with tab1:
