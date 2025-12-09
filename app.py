@@ -87,6 +87,107 @@ def extract_text_from_html(html: str) -> str:
     return text
 
 
+# ============================================================================
+# PLP WHITELIST - Only these URLs are valid link targets
+# ============================================================================
+PLP_WHITELIST = {
+    "https://uk.triumph.com/bras",
+    "https://uk.triumph.com/bras/minimizer",
+    "https://uk.triumph.com/bras/fuller-cups",
+    "https://uk.triumph.com/bras/backless-low-back",
+    "https://uk.triumph.com/bras/strapless-multiway",
+    "https://uk.triumph.com/bras/push-up-bras",
+    "https://uk.triumph.com/bras/t-shirt-bras",
+    "https://uk.triumph.com/bras/non-wired-bras",
+    "https://uk.triumph.com/bras/bralettes",
+    "https://uk.triumph.com/bras/sports-bras",
+    "https://uk.triumph.com/bras/lace-bras",
+    "https://uk.triumph.com/bras/nursing-bras",
+    "https://uk.triumph.com/knickers-panties-briefs",
+    "https://uk.triumph.com/knickers-panties-briefs/brazilian",
+    "https://uk.triumph.com/knickers-panties-briefs/midi-briefs",
+    "https://uk.triumph.com/knickers-panties-briefs/hipster",
+    "https://uk.triumph.com/knickers-panties-briefs/maxi-briefs",
+    "https://uk.triumph.com/knickers-panties-briefs/thongs",
+    "https://uk.triumph.com/knickers-panties-briefs/shorts",
+    "https://uk.triumph.com/knickers-panties-briefs/strings",
+    "https://uk.triumph.com/shapewear",
+    "https://uk.triumph.com/shapewear/bodysuits-all-in-ones",
+    "https://uk.triumph.com/shapewear/shaping-briefs",
+    "https://uk.triumph.com/shapewear/waist-cinchers-corsets",
+    "https://uk.triumph.com/shapewear/open-bust-shapers",
+    "https://uk.triumph.com/shapewear/shaping-dresses-skirts",
+    "https://uk.triumph.com/shapewear/bras",
+    "https://uk.triumph.com/nightwear-loungewear",
+    "https://uk.triumph.com/nightwear-loungewear/camisoles",
+    "https://uk.triumph.com/nightwear-loungewear/chemises-nighties",
+    "https://uk.triumph.com/nightwear-loungewear/pyjamas",
+    "https://uk.triumph.com/nightwear-loungewear/bottoms",
+    "https://uk.triumph.com/nightwear-loungewear/robes",
+    "https://uk.triumph.com/nightwear-loungewear/tops",
+    "https://uk.triumph.com/swimwear",
+    "https://uk.triumph.com/swimwear/bikinis-tankinis",
+    "https://uk.triumph.com/swimwear/bikinis-tankinis/bikini-tops",
+    "https://uk.triumph.com/swimwear/bikinis-tankinis/bikini-briefs",
+    "https://uk.triumph.com/swimwear/bikinis-tankinis/tankinis",
+    "https://uk.triumph.com/swimwear/swimsuits",
+    "https://uk.triumph.com/swimwear/beachwear",
+    "https://uk.triumph.com/collections",
+    "https://uk.triumph.com/collections/amourette",
+    "https://uk.triumph.com/collections/body-make-up",
+    "https://uk.triumph.com/collections/fit-smart",
+    "https://uk.triumph.com/collections/flex-smart",
+    "https://uk.triumph.com/collections/signature-sheer",
+    "https://uk.triumph.com/collections/wild-peony",
+    "https://uk.triumph.com/collections/essential-minimizer",
+    "https://uk.triumph.com/collections/ladyform",
+    "https://uk.triumph.com/collections/true-shape-sensation",
+    "https://uk.triumph.com/colours/beige",
+    "https://uk.triumph.com/colours/black",
+    "https://uk.triumph.com/colours/blue",
+    "https://uk.triumph.com/colours/white",
+    "https://uk.triumph.com/colours/pink",
+    "https://uk.triumph.com/bras/beige",
+    "https://uk.triumph.com/bras/black",
+    "https://uk.triumph.com/bras/blue",
+    "https://uk.triumph.com/bras/white",
+    "https://uk.triumph.com/bras/pink",
+    "https://uk.triumph.com/bras/red",
+    "https://uk.triumph.com/bras/green",
+    "https://uk.triumph.com/bras/purple",
+    "https://uk.triumph.com/bras/grey",
+    "https://uk.triumph.com/bras/brown",
+    "https://uk.triumph.com/bras/orange",
+    "https://uk.triumph.com/bras/yellow",
+    "https://uk.triumph.com/knickers-panties-briefs/beige",
+    "https://uk.triumph.com/knickers-panties-briefs/black",
+    "https://uk.triumph.com/knickers-panties-briefs/blue",
+    "https://uk.triumph.com/knickers-panties-briefs/white",
+    "https://uk.triumph.com/knickers-panties-briefs/pink",
+    "https://uk.triumph.com/knickers-panties-briefs/red",
+    "https://uk.triumph.com/knickers-panties-briefs/green",
+    "https://uk.triumph.com/knickers-panties-briefs/purple",
+    "https://uk.triumph.com/knickers-panties-briefs/grey",
+    "https://uk.triumph.com/shapewear/beige",
+    "https://uk.triumph.com/shapewear/black",
+    "https://uk.triumph.com/shapewear/white",
+    "https://uk.triumph.com/nightwear-loungewear/beige",
+    "https://uk.triumph.com/nightwear-loungewear/black",
+    "https://uk.triumph.com/nightwear-loungewear/blue",
+    "https://uk.triumph.com/nightwear-loungewear/white",
+    "https://uk.triumph.com/nightwear-loungewear/pink",
+    "https://uk.triumph.com/nightwear-loungewear/red",
+    "https://uk.triumph.com/nightwear-loungewear/grey",
+    "https://uk.triumph.com/swimwear/beige",
+    "https://uk.triumph.com/swimwear/black",
+    "https://uk.triumph.com/swimwear/blue",
+    "https://uk.triumph.com/swimwear/white",
+    "https://uk.triumph.com/swimwear/pink",
+    "https://uk.triumph.com/swimwear/green",
+    "https://uk.triumph.com/swimwear/orange",
+}
+
+
 def parse_sitemap(file_content: bytes, filename: str) -> List[str]:
     """Parse sitemap from JSON, TXT, or XML format"""
     urls = []
@@ -144,32 +245,21 @@ def extract_keyword_from_url(url: str) -> str:
 
 def is_plp_url(url: str) -> bool:
     """
-    Check if URL is a Product Listing Page (PLP) vs Product Detail Page (PDP).
-    PLPs are category pages, PDPs are individual product pages.
-
-    PDP indicators:
-    - Ends with .html
-    - Contains numeric product codes (e.g., /10005020-0003.html)
-    - Has very long numeric sequences
+    Check if URL is a Product Listing Page (PLP) using the official whitelist.
+    Only URLs in PLP_WHITELIST are valid link targets.
     """
     if not url:
         return False
 
-    url_lower = url.lower()
+    # Normalize URL (remove trailing slash, lowercase for comparison)
+    url_normalized = url.rstrip('/').lower()
 
-    # PDP: ends with .html
-    if url_lower.endswith('.html'):
-        return False
+    # Check against whitelist (also normalized)
+    for plp_url in PLP_WHITELIST:
+        if plp_url.rstrip('/').lower() == url_normalized:
+            return True
 
-    # PDP: contains numeric product codes (8+ digits)
-    if re.search(r'/\d{8,}', url):
-        return False
-
-    # PDP: ends with a numeric code pattern like /12345 or /12345-6789
-    if re.search(r'/\d+-\d+\.html?$', url) or re.search(r'/\d{5,}$', url):
-        return False
-
-    return True
+    return False
 
 
 def urls_are_semantically_coherent(source_url: str, target_url: str) -> bool:
