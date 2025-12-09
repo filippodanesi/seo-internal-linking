@@ -1102,21 +1102,25 @@ def main():
             ai_model = st.selectbox(
                 "AI Model",
                 [
+                    "gpt-5.1",
+                    "gpt-5-mini",
                     "gpt-4o",
                     "gpt-4o-mini",
                 ],
                 index=0,
-                help="GPT-4o is the most capable. GPT-4o-mini for faster/cheaper processing."
+                help="GPT-5.1 is the most capable. GPT-5-mini for faster/cheaper processing."
             )
         else:  # Anthropic
             ai_model = st.selectbox(
                 "AI Model",
                 [
+                    "claude-sonnet-4-5-20250929",
+                    "claude-opus-4-5-20251101",
                     "claude-sonnet-4-20250514",
                     "claude-opus-4-20250514",
                 ],
                 index=0,
-                help="Claude Sonnet 4 for balanced performance. Claude Opus 4 for maximum capability."
+                help="Claude Sonnet 4.5 (recommended). Claude Opus 4.5 for maximum capability."
             )
 
     # =========================================================================
