@@ -423,9 +423,8 @@ def create_network_graph(
             size=node_sizes,
             colorbar=dict(
                 thickness=15,
-                title='PageRank',
-                xanchor='left',
-                titleside='right'
+                title=dict(text='PageRank', side='right'),
+                xanchor='left'
             ),
             line_width=2
         )
