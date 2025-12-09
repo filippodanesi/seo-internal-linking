@@ -17,6 +17,7 @@ import networkx as nx
 import plotly.graph_objects as go
 from sklearn.metrics.pairwise import cosine_similarity
 from openai import OpenAI
+import anthropic
 import xml.etree.ElementTree as ET
 
 # Page config
@@ -422,13 +423,17 @@ def get_blog_link_suggestions(
     candidate_pages: List[Dict],
     api_key: str,
     max_links: int = 5,
-    model: str = "gpt-4o"
+    model: str = "gpt-4o",
+    provider: str = "openai"
 ) -> List[Dict]:
     """
-    Use GPT to suggest internal links for a blog post.
-    Similar to PLP mode but optimized for blog content.
+    Use AI to suggest internal links for a blog post.
+    Supports both OpenAI and Anthropic models.
     """
-    client = OpenAI(api_key=api_key)
+    if provider == "anthropic":
+        client = anthropic.Anthropic(api_key=api_key)
+    else:
+        client = OpenAI(api_key=api_key)
 
     # Prepare candidates summary
     candidates_text = "\n".join([
@@ -476,22 +481,31 @@ Return your suggestions as a JSON array:
 Return ONLY the JSON array, no other text."""
 
     try:
-        if model.startswith("gpt-5"):
-            response = client.chat.completions.create(
+        if provider == "anthropic":
+            # Anthropic Claude API
+            response = client.messages.create(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_completion_tokens=1500
+                max_tokens=1500,
+                messages=[{"role": "user", "content": prompt}]
             )
+            result = response.content[0].text.strip()
         else:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=1500
-            )
-
-        result = response.choices[0].message.content.strip()
+            # OpenAI API
+            if model.startswith("gpt-5"):
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                    max_completion_tokens=1500
+                )
+            else:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                    max_tokens=1500
+                )
+            result = response.choices[0].message.content.strip()
 
         # Parse JSON from response
         if result.startswith("```"):
@@ -622,13 +636,18 @@ def get_ai_link_suggestions(
     target_pages: List[Dict],
     api_key: str,
     max_links: int = 5,
-    model: str = "gpt-4o"
+    model: str = "gpt-4o",
+    provider: str = "openai"
 ) -> List[Dict]:
     """
-    Use GPT to analyze the source text and suggest intelligent link placements.
-    This mimics how an expert SEO would identify linking opportunities.
+    Use AI to analyze the source text and suggest intelligent link placements.
+    Supports both OpenAI and Anthropic models.
     """
-    client = OpenAI(api_key=api_key)
+    # Initialize client based on provider
+    if provider == "anthropic":
+        client = anthropic.Anthropic(api_key=api_key)
+    else:
+        client = OpenAI(api_key=api_key)
 
     # Prepare target pages summary
     targets_summary = "\n".join([
@@ -647,7 +666,7 @@ AVAILABLE TARGET PAGES TO LINK TO (Category Pages Only):
 {targets_summary}
 
 YOUR TASK:
-Analyze the source content and identify {max_links} optimal places to insert internal links.
+Analyze the source content and identify up to {max_links} optimal places to insert internal links.
 
 STRICT RULES:
 1. ONLY use URLs from the AVAILABLE TARGET PAGES list above - never invent URLs
@@ -655,54 +674,63 @@ STRICT RULES:
 3. ONLY link to category pages (PLPs) - never to product pages ending in .html or with numeric codes
 4. Maintain color coherence: if source is about "beige", only link to beige/nude/cream/tan/brown pages, never to black/blue/red etc.
 5. Each target URL should only be used ONCE
+6. The anchor text MUST exist EXACTLY as written in the source content - NO modifications allowed
 
-LINKING APPROACH (in order of preference):
-1. **BEST**: Find an EXACT phrase in the existing text that perfectly matches the target page topic
-2. **ACCEPTABLE**: If no perfect match exists, you MAY slightly modify the text to naturally incorporate a relevant keyword. Keep changes minimal and maintain the original meaning.
-3. **SKIP**: If you cannot find or create a natural fit, DO NOT force the link. It's better to have fewer high-quality links than many forced ones.
+QUALITY GUIDELINES:
+- Find natural phrases IN THE EXISTING TEXT that make good anchor texts
+- Prefer descriptive anchor texts (2-4 words) over single words
+- Don't link generic words like "here", "click", "this", "our", "the"
+- Ensure the anchor text is semantically related to the target page
+- If no good exact match exists, SKIP the link - quality over quantity
+- It's better to return 2 perfect links than 5 forced ones
 
-EXAMPLES OF ACCEPTABLE MODIFICATIONS:
-- Original: "our comfortable styles" → Modified: "our comfortable bralettes" (added specific product type)
-- Original: "explore our range" → Modified: "explore our shapewear range" (added category)
-- Original: "finding reliable support" → Modified: "finding reliable sports bra support" (added product context)
+GOOD EXAMPLES:
+- "beige bras" → /bras/beige ✓ (exact match, relevant)
+- "minimizer bra" → /bras/minimizer ✓ (exact match, relevant)
+- "light brown bralette" → /bras/brown ✓ (color coherent)
 
-DO NOT:
-- Force links on unrelated anchor texts (e.g., "beige sports bra" → minimizer page)
-- Use generic words as anchors ("here", "click", "this", "our", "the")
-- Combine multiple products in one anchor ("tan push up bra or cream push up bra")
-- Link to semantically unrelated categories
+BAD EXAMPLES:
+- "comfortable styles" → /bras/bralettes ✗ (not an exact match)
+- "beige sports bra" → /bras/minimizer ✗ (not semantically related)
+- "support and comfort" → /bras ✗ (too generic)
 
 Return your suggestions as a JSON array:
 [
   {{
-    "anchor_text": "the anchor text to use (exact from source OR your minimal modification)",
+    "anchor_text": "exact text from source to make into link",
     "target_url": "URL from the available list above",
-    "original_text": "the original text if modified, or same as anchor_text if unchanged",
-    "is_modified": true/false,
     "reason": "brief SEO explanation of why this link is valuable"
   }}
 ]
 
-Return ONLY the JSON array, no other text."""
+Return ONLY the JSON array, no other text. If no good matches exist, return an empty array []."""
 
     try:
-        # GPT-5.x uses max_completion_tokens, older models use max_tokens
-        if model.startswith("gpt-5"):
-            response = client.chat.completions.create(
+        if provider == "anthropic":
+            # Anthropic Claude API
+            response = client.messages.create(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_completion_tokens=1500
+                max_tokens=1500,
+                messages=[{"role": "user", "content": prompt}]
             )
+            result = response.content[0].text.strip()
         else:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=1500
-            )
-
-        result = response.choices[0].message.content.strip()
+            # OpenAI API - GPT-5.x uses max_completion_tokens, older models use max_tokens
+            if model.startswith("gpt-5"):
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                    max_completion_tokens=1500
+                )
+            else:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                    max_tokens=1500
+                )
+            result = response.choices[0].message.content.strip()
 
         # Parse JSON from response
         if result.startswith("```"):
@@ -718,7 +746,7 @@ Return ONLY the JSON array, no other text."""
 
 
 def insert_ai_suggested_links(html_text: str, suggestions: List[Dict], source_url: str = "") -> Tuple[str, List[Dict]]:
-    """Insert links based on AI suggestions with validation. Supports text modifications."""
+    """Insert links based on AI suggestions with validation. Conservative: exact matches only."""
     if not html_text or not suggestions:
         return html_text, []
 
@@ -731,8 +759,6 @@ def insert_ai_suggested_links(html_text: str, suggestions: List[Dict], source_ur
         anchor = suggestion.get('anchor_text', '')
         target_url = suggestion.get('target_url', '')
         reason = suggestion.get('reason', '')
-        original_text = suggestion.get('original_text', anchor)  # Text to find in source
-        is_modified = suggestion.get('is_modified', False)
 
         if not anchor or not target_url:
             continue
@@ -757,12 +783,9 @@ def insert_ai_suggested_links(html_text: str, suggestions: List[Dict], source_ur
         if target_url in used_urls:
             continue
 
-        # Find text in content, avoiding existing links
+        # Find anchor in text, avoiding existing links
         # Strategy: split by <a>...</a> tags, only search in non-link parts
         parts = re.split(r'(<a\s[^>]*>.*?</a>)', result, flags=re.IGNORECASE | re.DOTALL)
-
-        # Determine what text to search for
-        search_text = original_text if is_modified else anchor
 
         found = False
         new_parts = []
@@ -772,30 +795,21 @@ def insert_ai_suggested_links(html_text: str, suggestions: List[Dict], source_ur
                 # Already found or this is an existing link - keep as is
                 new_parts.append(part)
             else:
-                # Search for the text in this non-link part
-                pattern = re.compile(re.escape(search_text), re.IGNORECASE)
+                # Search for anchor in this non-link part (exact match only)
+                pattern = re.compile(re.escape(anchor), re.IGNORECASE)
                 match = pattern.search(part)
 
                 if match:
-                    # Replace: if modified, replace original with new anchor+link
-                    # if not modified, just wrap the found text with link
-                    if is_modified:
-                        # Replace original text with modified anchor text wrapped in link
-                        replacement = f'<a href="{target_url}">{anchor}</a>'
-                    else:
-                        # Keep original text case, just wrap with link
-                        found_text = match.group(0)
-                        replacement = f'<a href="{target_url}">{found_text}</a>'
-
+                    # Replace first occurrence, keep original case
+                    original_text = match.group(0)
+                    replacement = f'<a href="{target_url}">{original_text}</a>'
                     new_part = part[:match.start()] + replacement + part[match.end():]
                     new_parts.append(new_part)
                     found = True
 
                     links_inserted.append({
-                        'anchor_text': anchor,
+                        'anchor_text': original_text,
                         'target_url': target_url,
-                        'original_text': original_text if is_modified else anchor,
-                        'is_modified': is_modified,
                         'reason': reason
                     })
                     used_anchors.add(anchor.lower())
@@ -1004,21 +1018,36 @@ def main():
 
         st.divider()
 
-        # API Key handling
-        has_secret_key = "OPENAI_API_KEY" in st.secrets
+        # AI Provider selection (moved here so API key field changes accordingly)
+        ai_provider = st.selectbox(
+            "🤖 AI Provider",
+            ["OpenAI", "Anthropic"],
+            index=0,
+            help="Choose between OpenAI (GPT) or Anthropic (Claude) models"
+        )
+
+        # API Key handling based on provider
+        if ai_provider == "OpenAI":
+            secret_key_name = "OPENAI_API_KEY"
+            key_label = "OpenAI API Key"
+            key_help = "Your OpenAI API key for GPT models"
+        else:
+            secret_key_name = "ANTHROPIC_API_KEY"
+            key_label = "Anthropic API Key"
+            key_help = "Your Anthropic API key for Claude models"
+
+        has_secret_key = secret_key_name in st.secrets
 
         if has_secret_key:
-            st.success("✓ API key loaded from secrets")
-            api_key = st.secrets["OPENAI_API_KEY"]
+            st.success(f"✓ {ai_provider} API key loaded from secrets")
+            api_key = st.secrets[secret_key_name]
         else:
             api_key = st.text_input(
-                "OpenAI API Key",
+                key_label,
                 type="password",
-                help="Your OpenAI API key for AI-powered analysis",
-                key="api_key_input"
+                help=key_help,
+                key=f"api_key_input_{ai_provider}"
             )
-            if api_key:
-                st.session_state['manual_api_key'] = api_key
 
         st.divider()
 
@@ -1057,17 +1086,27 @@ def main():
             use_ai_suggestions = True
             st.info("🤖 Blog mode uses AI-powered semantic analysis")
 
-        ai_model = st.selectbox(
-            "AI Model",
-            [
-                "gpt-5.1",
-                "gpt-5-mini",
-                "gpt-4o",
-                "gpt-4o-mini",
-            ],
-            index=0,
-            help="GPT-5.1 is the most intelligent model. GPT-5-mini for faster/cheaper processing."
-        )
+        # Model selection based on provider (provider already selected above)
+        if ai_provider == "OpenAI":
+            ai_model = st.selectbox(
+                "AI Model",
+                [
+                    "gpt-4o",
+                    "gpt-4o-mini",
+                ],
+                index=0,
+                help="GPT-4o is the most capable. GPT-4o-mini for faster/cheaper processing."
+            )
+        else:  # Anthropic
+            ai_model = st.selectbox(
+                "AI Model",
+                [
+                    "claude-sonnet-4-20250514",
+                    "claude-opus-4-20250514",
+                ],
+                index=0,
+                help="Claude Sonnet 4 for balanced performance. Claude Opus 4 for maximum capability."
+            )
 
     # =========================================================================
     # BLOG MODE
@@ -1204,7 +1243,8 @@ def main():
                     candidate_pages=top_candidates,
                     api_key=api_key,
                     max_links=max_links,
-                    model=ai_model
+                    model=ai_model,
+                    provider=ai_provider.lower()
                 )
 
                 progress_bar.progress(85)
@@ -1537,21 +1577,17 @@ def main():
                             target_pages=target_pages,
                             api_key=api_key,
                             max_links=max_links,
-                            model=ai_model
+                            model=ai_model,
+                            provider=ai_provider.lower()
                         )
 
                         new_text, links_inserted = insert_ai_suggested_links(source_text, suggestions, source_url)
 
-                        # Build reasoning with modification indicator
-                        reasoning_lines = []
-                        for l in links_inserted:
-                            if l.get('is_modified'):
-                                reasoning_lines.append(
-                                    f"• {l['anchor_text']} [✏️ modified from: \"{l['original_text']}\"] → {l['reason']}"
-                                )
-                            else:
-                                reasoning_lines.append(f"• {l['anchor_text']} → {l['reason']}")
-                        reasoning = '\n'.join(reasoning_lines)
+                        # Build reasoning
+                        reasoning = '\n'.join([
+                            f"• {l['anchor_text']} → {l['reason']}"
+                            for l in links_inserted
+                        ])
 
                     else:
                         # Fallback to keyword matching
