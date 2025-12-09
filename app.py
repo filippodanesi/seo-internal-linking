@@ -93,27 +93,34 @@ def parse_sitemap(file_content: bytes, filename: str) -> List[str]:
     content = file_content.decode('utf-8')
 
     try:
-        if filename.endswith('.json'):
-            # JSON array of URLs
+        # First, try to detect format by content, not just extension
+        content_stripped = content.strip()
+
+        if content_stripped.startswith('[') or content_stripped.startswith('{'):
+            # Looks like JSON
             data = json.loads(content)
             if isinstance(data, list):
                 urls = [u for u in data if isinstance(u, str) and u.startswith('http')]
             elif isinstance(data, dict) and 'urls' in data:
                 urls = [u for u in data['urls'] if isinstance(u, str) and u.startswith('http')]
 
-        elif filename.endswith('.xml'):
+        elif content_stripped.startswith('<?xml') or '<urlset' in content_stripped or '<loc>' in content_stripped:
             # XML sitemap
-            import re
             loc_pattern = re.compile(r'<loc>(.*?)</loc>', re.IGNORECASE)
             urls = loc_pattern.findall(content)
 
         else:
-            # TXT - one URL per line
+            # TXT - one URL per line (default fallback)
             urls = [line.strip() for line in content.split('\n')
                     if line.strip().startswith('http')]
 
     except Exception as e:
-        st.warning(f"Error parsing sitemap: {str(e)}")
+        # If JSON parsing fails, try as plain text
+        try:
+            urls = [line.strip() for line in content.split('\n')
+                    if line.strip().startswith('http')]
+        except:
+            st.warning(f"Error parsing sitemap: {str(e)}")
 
     return urls
 
