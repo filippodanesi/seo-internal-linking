@@ -54,9 +54,14 @@ st.markdown("""
 # UTILITY FUNCTIONS
 # ============================================================================
 
-def parse_url_path(url: str) -> Dict:
+def parse_url_path(url) -> Dict:
     """Extract category structure from URL"""
     try:
+        # Handle NaN, None, or non-string values
+        if url is None or (isinstance(url, float) and np.isnan(url)):
+            return {'category': '', 'subcategory': '', 'color': '', 'depth': 0}
+
+        url = str(url)
         from urllib.parse import urlparse
         parsed = urlparse(url)
         path_parts = [p for p in parsed.path.split('/') if p]
@@ -67,7 +72,7 @@ def parse_url_path(url: str) -> Dict:
             'depth': len(path_parts)
         }
     except:
-        return {'category': '', 'subcategory': '', 'color': '', depth: 0}
+        return {'category': '', 'subcategory': '', 'color': '', 'depth': 0}
 
 
 def escape_regex(string: str) -> str:
